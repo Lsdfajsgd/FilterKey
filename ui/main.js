@@ -449,4 +449,30 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   // 창 포커스 복귀 시 실제 시스템 값 다시 읽기
   window.addEventListener('focus', () => refresh().catch(() => {}));
+
+  // ─────────── 자동 업데이트 확인 ───────────
+  $('update-btn').addEventListener('click', async () => {
+    const btn = $('update-btn');
+    btn.disabled = true;
+    btn.textContent = '다운로드 중…';
+    try {
+      await invoke('install_update'); // 설치 후 자동 재시작됨
+    } catch (e) {
+      toast('업데이트 실패: ' + e, 4000);
+      btn.disabled = false;
+      btn.textContent = '지금 업데이트';
+    }
+  });
+
+  (async () => {
+    try {
+      const info = await invoke('check_update');
+      if (info) {
+        $('update-text').textContent = `🍁 새 버전 v${info.version} 사용 가능`;
+        $('update-banner').classList.remove('hidden');
+      }
+    } catch (_) {
+      // 개발 모드이거나 네트워크 오류 — 조용히 무시
+    }
+  })();
 });

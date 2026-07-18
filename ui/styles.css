@@ -277,6 +277,21 @@ code {
   color: var(--accent);
 }
 
+/* 업데이트 배너 */
+.update-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 16px;
+  background: linear-gradient(90deg, rgba(232, 98, 44, .22), rgba(232, 98, 44, .08));
+  border-bottom: 1px solid var(--accent-dim);
+  font-size: 12px;
+  font-weight: 700;
+}
+.update-banner .btn { background: var(--accent); border-color: var(--accent-dim); color: #fff; }
+.update-banner .btn:disabled { opacity: .6; cursor: default; }
+
 /* 토스트 / 오버레이 */
 .toast {
   position: fixed;

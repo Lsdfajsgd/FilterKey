@@ -327,6 +327,45 @@ fn sync_hotkeys(app: &AppHandle, cfg: &AppConfig) -> Vec<String> {
     failed
 }
 
+// ─────────────────────────────── 자동 업데이트 ───────────────────────────────
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct UpdateInfo {
+    version: String,
+    notes: Option<String>,
+}
+
+#[tauri::command]
+async fn check_update(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    match updater.check().await {
+        Ok(Some(u)) => Ok(Some(UpdateInfo {
+            version: u.version.clone(),
+            notes: u.body.clone(),
+        })),
+        Ok(None) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+async fn install_update(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "설치할 업데이트가 없습니다".to_string())?;
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|e| e.to_string())?;
+    app.restart();
+}
+
 // ─────────────────────────────── Tauri 커맨드 ───────────────────────────────
 
 #[tauri::command]
@@ -386,6 +425,7 @@ fn save_config(
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
@@ -486,7 +526,9 @@ fn main() {
             apply_values,
             toggle_filter,
             apply_preset,
-            save_config
+            save_config,
+            check_update,
+            install_update
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
