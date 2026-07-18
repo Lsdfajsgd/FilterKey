@@ -46,25 +46,25 @@
 
       <!-- 값 편집 뷰 -->
       <div id="view-values">
-        <div class="vrow" title="키를 누르고 나서 실제 입력으로 먹히기까지 눌러야 하는 시간 · 크면 짧게 누른 키가 씹힘 · 메이플 세팅은 0 권장">
+        <div class="vrow" title="키를 누르고 나서 실제 입력으로 먹히기까지 눌러야 하는 시간 · 크면 짧게 누른 키가 씹힘 · 메이플 세팅은 0 권장 · 최대 20초 (윈도우 한계) · '같은 키 연타 무시 시간'과 동시 사용 불가">
           <div class="lbl"><label>키가 먹히기까지 시간</label><span class="regname">DelayBeforeAcceptance</span></div>
-          <input type="range" id="sl-wait" min="0" max="2000" step="5" />
-          <div class="num-wrap"><input type="number" id="in-wait" min="0" /><span class="unit-suffix">ms</span></div>
+          <input type="range" id="sl-wait" min="0" max="20000" step="5" />
+          <div class="num-wrap"><input type="number" id="in-wait" min="0" max="20000" /><span class="unit-suffix">ms</span></div>
         </div>
-        <div class="vrow" title="키를 꾹 누르고 있을 때 연타(자동 반복 입력)가 시작되기까지 기다리는 시간 · 낮을수록 연타가 빨리 시작됨 · 초보 150 / 고수 100">
+        <div class="vrow" title="키를 꾹 누르고 있을 때 연타(자동 반복 입력)가 시작되기까지 기다리는 시간 · 낮을수록 연타가 빨리 시작됨 · 초보 150 / 고수 100 · 최대 20초 (윈도우 한계)">
           <div class="lbl"><label>연타 시작까지 대기시간</label><span class="regname">AutoRepeatDelay</span></div>
-          <input type="range" id="sl-delay" min="0" max="2000" step="5" />
-          <div class="num-wrap"><input type="number" id="in-delay" min="0" /><span class="unit-suffix">ms</span></div>
+          <input type="range" id="sl-delay" min="0" max="20000" step="5" />
+          <div class="num-wrap"><input type="number" id="in-delay" min="0" max="20000" /><span class="unit-suffix">ms</span></div>
         </div>
-        <div class="vrow" title="연타가 시작된 후 연타 한 번과 다음 연타 사이의 간격 · 낮을수록 연타 속도가 빨라짐 · 초보 20 / 고수 10 · 0이면 연타 자체가 꺼짐">
+        <div class="vrow" title="연타가 시작된 후 연타 한 번과 다음 연타 사이의 간격 · 낮을수록 연타 속도가 빨라짐 · 초보 20 / 고수 10 · 0이면 연타 자체가 꺼짐 · 최대 20초 (윈도우 한계)">
           <div class="lbl"><label>연타 속도 (한 번 간격)</label><span class="regname">AutoRepeatRate</span></div>
-          <input type="range" id="sl-repeat" min="0" max="1000" step="5" />
-          <div class="num-wrap"><input type="number" id="in-repeat" min="0" /><span class="unit-suffix">ms</span></div>
+          <input type="range" id="sl-repeat" min="0" max="20000" step="5" />
+          <div class="num-wrap"><input type="number" id="in-repeat" min="0" max="20000" /><span class="unit-suffix">ms</span></div>
         </div>
-        <div class="vrow" title="키를 뗐다가 다시 누를 때, 이 시간 안에 다시 누른 입력은 무시됨 · 빠른 연타가 씹히는 주범 · 0 권장">
+        <div class="vrow" title="키를 뗐다가 다시 누를 때, 이 시간 안에 다시 누른 입력은 무시됨 · 빠른 연타가 씹히는 주범 · 0 권장 · 최대 20초 (윈도우 한계) · '키가 먹히기까지 시간'과 동시 사용 불가">
           <div class="lbl"><label>같은 키 연타 무시 시간</label><span class="regname">BounceTime</span></div>
-          <input type="range" id="sl-bounce" min="0" max="2000" step="5" />
-          <div class="num-wrap"><input type="number" id="in-bounce" min="0" /><span class="unit-suffix">ms</span></div>
+          <input type="range" id="sl-bounce" min="0" max="20000" step="5" />
+          <div class="num-wrap"><input type="number" id="in-bounce" min="0" max="20000" /><span class="unit-suffix">ms</span></div>
         </div>
         <div class="vrow" id="hotkey-row" title="이 프리셋을 즉시 적용하는 전역 단축키 · 게임 중에도 동작">
           <label>단축키</label>

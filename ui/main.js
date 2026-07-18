@@ -24,10 +24,13 @@ function msToUnit(ms) {
   return config.unit === 's' ? parseFloat((ms / 1000).toFixed(3)) : ms;
 }
 
+// 윈도우가 허용하는 하드 한계 (실측: 20001ms부터 SPI_SETFILTERKEYS 거부)
+const MAX_MS = 20000;
+
 function unitToMs(v) {
   const n = parseFloat(v);
   if (isNaN(n) || n < 0) return 0;
-  return Math.round(config.unit === 's' ? n * 1000 : n);
+  return Math.min(MAX_MS, Math.round(config.unit === 's' ? n * 1000 : n));
 }
 
 function prettyHotkey(hk) {
@@ -317,6 +320,11 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   // 적용
   $('btn-apply').addEventListener('click', async () => {
+    // 윈도우 제약: 키 인식 지연(wait)과 연타 무시(bounce)는 동시에 0보다 클 수 없음
+    if (draft.wait > 0 && draft.bounce > 0) {
+      toast('⚠ "키가 먹히기까지 시간"과 "같은 키 연타 무시 시간"은 동시에 사용할 수 없어요 — 둘 중 하나를 0으로 해주세요', 4200);
+      return;
+    }
     try {
       const p = selPreset();
       if (p) {
