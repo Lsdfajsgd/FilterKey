@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1b1f2a"/>
+      <stop offset="1" stop-color="#0c0e14"/>
+    </linearGradient>
+    <linearGradient id="leafGrad" gradientUnits="userSpaceOnUse" x1="0" y1="-46" x2="0" y2="36">
+      <stop offset="0" stop-color="#ffb347"/>
+      <stop offset="0.55" stop-color="#ff8c2b"/>
+      <stop offset="1" stop-color="#ff5533"/>
+    </linearGradient>
+    <filter id="leafGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="14" stdDeviation="26" flood-color="#ff7a2b" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+
+  <!-- 배경 라운드 사각형 -->
+  <rect x="64" y="64" width="896" height="896" rx="204" fill="url(#bgGrad)"/>
+  <rect x="64" y="64" width="896" height="896" rx="204" fill="none" stroke="#00b7e8" stroke-opacity="0.35" stroke-width="10"/>
+
+  <!-- 단풍잎: 잎날 5장 회전 배치 + 중심 + 줄기 -->
+  <g filter="url(#leafGlow)">
+    <g transform="translate(512,440) scale(5.8)" fill="url(#leafGrad)">
+      <path d="M0 -44 C11 -25 13 -8 0 8 C-13 -8 -11 -25 0 -44 Z"/>
+      <path transform="rotate(58)" d="M0 -44 C11 -25 13 -8 0 8 C-13 -8 -11 -25 0 -44 Z"/>
+      <path transform="rotate(-58)" d="M0 -44 C11 -25 13 -8 0 8 C-13 -8 -11 -25 0 -44 Z"/>
+      <path transform="rotate(118) scale(0.72)" d="M0 -44 C11 -25 13 -8 0 8 C-13 -8 -11 -25 0 -44 Z"/>
+      <path transform="rotate(-118) scale(0.72)" d="M0 -44 C11 -25 13 -8 0 8 C-13 -8 -11 -25 0 -44 Z"/>
+      <circle r="11" cy="-4"/>
+      <path d="M-3.2 0 L3.2 0 L2 32 L-2 32 Z"/>
+    </g>
+  </g>
+</svg>

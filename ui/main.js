@@ -1,0 +1,444 @@
+// 메이플헬퍼 — Solaar 스타일 리스트/상세 UI
+const { invoke } = window.__TAURI__.core;
+const { listen } = window.__TAURI__.event;
+
+const $ = (id) => document.getElementById(id);
+
+let config = null;              // AppConfig (camelCase)
+let sys = null;                 // SysState
+let sel = 'custom';             // 'custom' | presetId | 'settings'
+const draft = { wait: 0, delay: 0, repeat: 0, bounce: 0 }; // 편집 중 값 (ms)
+const FIELDS = ['wait', 'delay', 'repeat', 'bounce'];
+
+// ─────────────────────────── 유틸 ───────────────────────────
+
+function fmtValue(ms) {
+  if (config && config.unit === 's') {
+    const s = ms / 1000;
+    return (Number.isInteger(s) ? s : parseFloat(s.toFixed(3))) + '초';
+  }
+  return ms + 'ms';
+}
+
+function msToUnit(ms) {
+  return config.unit === 's' ? parseFloat((ms / 1000).toFixed(3)) : ms;
+}
+
+function unitToMs(v) {
+  const n = parseFloat(v);
+  if (isNaN(n) || n < 0) return 0;
+  return Math.round(config.unit === 's' ? n * 1000 : n);
+}
+
+function prettyHotkey(hk) {
+  if (!hk) return null;
+  return hk
+    .split('+')
+    .map((t) => {
+      const u = t.trim();
+      if (/^f\d+$/i.test(u)) return u.toUpperCase();
+      if (u.toLowerCase() === 'ctrl') return 'Ctrl';
+      if (u.toLowerCase() === 'alt') return 'Alt';
+      if (u.toLowerCase() === 'shift') return 'Shift';
+      if (u.toLowerCase() === 'super') return 'Win';
+      return u.length === 1 ? u.toUpperCase() : u;
+    })
+    .join('+');
+}
+
+let toastTimer = null;
+function toast(msg, ms = 2400) {
+  const el = $('toast');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.add('hidden'), ms);
+}
+
+function selPreset() {
+  return config.presets.find((p) => p.id === sel) || null;
+}
+
+// ─────────────────────────── 렌더링 ───────────────────────────
+
+function renderList() {
+  const list = $('item-list');
+  list.innerHTML = '';
+
+  const mk = (id, name, meta, metaOn) => {
+    const it = document.createElement('div');
+    it.className = 'litem' + (sel === id ? ' sel' : '');
+    const nm = document.createElement('span');
+    nm.className = 'nm';
+    nm.textContent = name;
+    it.appendChild(nm);
+    if (meta) {
+      const m = document.createElement('span');
+      m.className = 'meta' + (metaOn ? ' on' : '');
+      m.textContent = meta;
+      it.appendChild(m);
+    }
+    it.onclick = () => select(id);
+    list.appendChild(it);
+    return it;
+  };
+
+  mk('custom', '현재 값 (커스텀)', config.activePreset ? '' : (sys && sys.on ? '적용 중' : ''), true);
+
+  const sep = document.createElement('div');
+  sep.className = 'list-sep';
+  list.appendChild(sep);
+
+  config.presets.forEach((p) => {
+    const isActive = config.activePreset === p.id;
+    mk(p.id, p.name, isActive ? '적용 중' : (prettyHotkey(p.hotkey) || ''), isActive);
+  });
+}
+
+function fillEditor() {
+  FIELDS.forEach((f) => {
+    $('in-' + f).value = msToUnit(draft[f]);
+    $('sl-' + f).value = draft[f];
+  });
+  const suffix = config.unit === 's' ? '초' : 'ms';
+  document.querySelectorAll('.unit-suffix').forEach((el) => (el.textContent = suffix));
+  const step = config.unit === 's' ? 0.01 : 5;
+  FIELDS.forEach((f) => ($('in-' + f).step = step));
+}
+
+function renderDetail() {
+  const title = $('detail-title');
+  const p = selPreset();
+  const isSettings = sel === 'settings';
+  const isCustom = sel === 'custom';
+
+  $('view-values').classList.toggle('hidden', isSettings);
+  $('view-settings').classList.toggle('hidden', !isSettings);
+  $('hotkey-row').classList.toggle('hidden', !p);
+  $('btn-delete').classList.toggle('hidden', !p);
+  $('btn-save').classList.toggle('hidden', !p);
+  $('btn-apply').classList.toggle('hidden', isSettings);
+
+  if (isSettings) {
+    title.value = '설정';
+    title.readOnly = true;
+    $('detail-sub').textContent = '전역 단축키 · 동작 옵션';
+    $('unit-ms').classList.toggle('active', config.unit === 'ms');
+    $('unit-s').classList.toggle('active', config.unit === 's');
+    $('opt-persist').checked = config.persistRegistry;
+    $('opt-beep').checked = config.beepOnHotkey;
+    const btn = $('toggle-hotkey-btn');
+    btn.textContent = config.toggleHotkey ? prettyHotkey(config.toggleHotkey) : '지정 안 됨';
+    btn.classList.toggle('set', !!config.toggleHotkey);
+  } else if (isCustom) {
+    title.value = '현재 값 (커스텀)';
+    title.readOnly = true;
+    $('detail-sub').textContent = '값을 조정한 뒤 [적용]을 누르면 즉시 반영됩니다';
+    fillEditor();
+  } else if (p) {
+    title.value = p.name;
+    title.readOnly = false;
+    $('detail-sub').textContent = '프리셋 · 이름을 클릭해 수정할 수 있어요';
+    const chip = $('preset-hotkey-btn');
+    chip.textContent = p.hotkey ? prettyHotkey(p.hotkey) : '지정 안 됨';
+    chip.classList.toggle('set', !!p.hotkey);
+    fillEditor();
+  }
+}
+
+function renderStatus() {
+  if (!sys) return;
+  $('power-toggle').checked = sys.on;
+  $('sys-summary').textContent =
+    (sys.on ? '켜짐' : '꺼짐') +
+    ' · ' +
+    [sys.waitMs, sys.delayMs, sys.repeatMs, sys.bounceMs].map((v) => fmtValue(v)).join(' / ');
+}
+
+function renderAll() {
+  renderList();
+  renderDetail();
+  renderStatus();
+}
+
+// ─────────────────────────── 선택 ───────────────────────────
+
+function select(id) {
+  sel = id;
+  const p = selPreset();
+  if (p) {
+    draft.wait = p.waitMs; draft.delay = p.delayMs;
+    draft.repeat = p.repeatMs; draft.bounce = p.bounceMs;
+  } else if (sel === 'custom' && sys) {
+    draft.wait = sys.waitMs; draft.delay = sys.delayMs;
+    draft.repeat = sys.repeatMs; draft.bounce = sys.bounceMs;
+  }
+  renderList();
+  renderDetail();
+}
+
+// 프리셋에 draft + 이름 저장
+function commitDraftToPreset(p) {
+  p.waitMs = draft.wait;
+  p.delayMs = draft.delay;
+  p.repeatMs = draft.repeat;
+  p.bounceMs = draft.bounce;
+  const name = $('detail-title').value.trim();
+  if (name) p.name = name;
+}
+
+// ─────────────────────────── 단축키 캡처 ───────────────────────────
+
+const CODE_MAP = {
+  Space: 'Space', Home: 'Home', End: 'End',
+  PageUp: 'PageUp', PageDown: 'PageDown',
+  Insert: 'Insert', Delete: 'Delete',
+  ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
+  Minus: '-', Equal: '=', Comma: ',', Period: '.', Slash: '/',
+  Semicolon: ';', Quote: "'", Backquote: '`',
+  BracketLeft: '[', BracketRight: ']', Backslash: '\\',
+};
+
+let captureCallback = null;
+
+function captureHotkey(cb) {
+  captureCallback = cb;
+  $('hotkey-overlay').classList.remove('hidden');
+}
+
+window.addEventListener(
+  'keydown',
+  (e) => {
+    if (!captureCallback) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (e.key === 'Escape') {
+      captureCallback = null;
+      $('hotkey-overlay').classList.add('hidden');
+      return;
+    }
+    if (e.key === 'Backspace') {
+      const cb = captureCallback;
+      captureCallback = null;
+      $('hotkey-overlay').classList.add('hidden');
+      cb(null);
+      toast('단축키를 해제했어요');
+      return;
+    }
+
+    let key = null;
+    if (/^Key([A-Z])$/.test(e.code)) key = e.code.slice(3).toLowerCase();
+    else if (/^Digit(\d)$/.test(e.code)) key = e.code.slice(5);
+    else if (/^F(\d{1,2})$/.test(e.code)) key = e.code.toLowerCase();
+    else if (CODE_MAP[e.code]) key = CODE_MAP[e.code];
+    if (!key) return;
+
+    const mods = [];
+    if (e.ctrlKey) mods.push('ctrl');
+    if (e.altKey) mods.push('alt');
+    if (e.shiftKey) mods.push('shift');
+    if (e.metaKey) mods.push('super');
+
+    if (mods.length === 0 && !/^f\d{1,2}$/.test(key)) {
+      toast('일반 키 단독은 게임 입력과 충돌해요 — Ctrl/Alt/Shift 조합 또는 F키를 사용하세요');
+      return;
+    }
+
+    const combo = [...mods, key].join('+');
+    const cb = captureCallback;
+    captureCallback = null;
+    $('hotkey-overlay').classList.add('hidden');
+    cb(combo);
+  },
+  true
+);
+
+// ─────────────────────────── 백엔드 연동 ───────────────────────────
+
+async function saveConfig() {
+  try {
+    const failed = await invoke('save_config', { config });
+    if (failed && failed.length > 0) {
+      toast('일부 단축키 등록 실패 (충돌?): ' + failed.map(prettyHotkey).join(', '), 3600);
+    }
+  } catch (e) {
+    toast('설정 저장 실패: ' + e);
+  }
+}
+
+async function refresh() {
+  const st = await invoke('get_state');
+  config = st.config;
+  sys = st.sys;
+  if (sel !== 'custom' && sel !== 'settings' && !selPreset()) sel = 'custom';
+  renderAll();
+}
+
+// ─────────────────────────── 이벤트 바인딩 ───────────────────────────
+
+window.addEventListener('DOMContentLoaded', async () => {
+  try {
+    await refresh();
+    select('custom');
+  } catch (e) {
+    toast('초기화 실패: ' + e);
+    return;
+  }
+
+  listen('state-changed', (ev) => {
+    sys = ev.payload.sys;
+    if (config) config.activePreset = ev.payload.activePreset ?? null;
+    renderList();
+    renderStatus();
+  });
+
+  // 마스터 토글
+  $('power-toggle').addEventListener('change', async () => {
+    try {
+      await invoke('toggle_filter');
+    } catch (e) {
+      toast('토글 실패: ' + e);
+      renderStatus();
+    }
+  });
+
+  // 슬라이더 ↔ 숫자 동기화 (draft에 기록)
+  FIELDS.forEach((f) => {
+    $('sl-' + f).addEventListener('input', (e) => {
+      draft[f] = parseInt(e.target.value, 10) || 0;
+      $('in-' + f).value = msToUnit(draft[f]);
+    });
+    $('in-' + f).addEventListener('input', (e) => {
+      draft[f] = unitToMs(e.target.value);
+      $('sl-' + f).value = draft[f];
+    });
+  });
+
+  // 적용
+  $('btn-apply').addEventListener('click', async () => {
+    try {
+      const p = selPreset();
+      if (p) {
+        commitDraftToPreset(p);
+        await saveConfig();
+        await invoke('apply_preset', { id: p.id });
+        toast(`「${p.name}」 적용됨 — 필터키 ON`);
+        renderList();
+      } else {
+        await invoke('apply_values', {
+          on: true,
+          waitMs: draft.wait, delayMs: draft.delay,
+          repeatMs: draft.repeat, bounceMs: draft.bounce,
+        });
+        toast('적용 완료 — 재부팅 없이 바로 반영됐어요');
+      }
+    } catch (e) {
+      toast('적용 실패: ' + e);
+    }
+  });
+
+  // 저장 (프리셋)
+  $('btn-save').addEventListener('click', () => {
+    const p = selPreset();
+    if (!p) return;
+    commitDraftToPreset(p);
+    saveConfig();
+    renderList();
+    toast(`「${p.name}」 저장됨`);
+  });
+
+  // 삭제 (프리셋)
+  $('btn-delete').addEventListener('click', () => {
+    const p = selPreset();
+    if (!p) return;
+    config.presets = config.presets.filter((x) => x.id !== p.id);
+    if (config.activePreset === p.id) config.activePreset = null;
+    saveConfig();
+    select('custom');
+    toast(`「${p.name}」 삭제됨`);
+  });
+
+  // 프리셋 추가 (현재 draft 값으로)
+  $('btn-add-preset').addEventListener('click', () => {
+    const n = config.presets.length + 1;
+    const p = {
+      id: 'p' + Math.random().toString(36).slice(2, 10),
+      name: '프리셋 ' + n,
+      waitMs: draft.wait, delayMs: draft.delay,
+      repeatMs: draft.repeat, bounceMs: draft.bounce,
+      hotkey: null,
+    };
+    config.presets.push(p);
+    saveConfig();
+    select(p.id);
+    const title = $('detail-title');
+    title.focus();
+    title.select();
+  });
+
+  // 설정 열기
+  $('btn-settings').addEventListener('click', () => select('settings'));
+
+  // 프리셋 이름 변경
+  $('detail-title').addEventListener('change', () => {
+    const p = selPreset();
+    if (!p) return;
+    const name = $('detail-title').value.trim();
+    if (name) {
+      p.name = name;
+      saveConfig();
+      renderList();
+    }
+  });
+  $('detail-title').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') e.target.blur();
+  });
+
+  // 프리셋 단축키
+  $('preset-hotkey-btn').addEventListener('click', () => {
+    const p = selPreset();
+    if (!p) return;
+    captureHotkey((combo) => {
+      p.hotkey = combo;
+      saveConfig();
+      renderDetail();
+      renderList();
+    });
+  });
+
+  // 설정: 토글 단축키
+  $('toggle-hotkey-btn').addEventListener('click', () =>
+    captureHotkey((combo) => {
+      config.toggleHotkey = combo;
+      saveConfig();
+      renderDetail();
+    })
+  );
+  $('toggle-hotkey-clear').addEventListener('click', () => {
+    config.toggleHotkey = null;
+    saveConfig();
+    renderDetail();
+  });
+
+  // 설정: 단위 / 영구 저장 / 비프
+  $('unit-ms').addEventListener('click', () => switchUnit('ms'));
+  $('unit-s').addEventListener('click', () => switchUnit('s'));
+  function switchUnit(u) {
+    if (config.unit === u) return;
+    config.unit = u;
+    saveConfig();
+    renderAll();
+  }
+  $('opt-persist').addEventListener('change', (e) => {
+    config.persistRegistry = e.target.checked;
+    saveConfig();
+  });
+  $('opt-beep').addEventListener('change', (e) => {
+    config.beepOnHotkey = e.target.checked;
+    saveConfig();
+  });
+
+  // 창 포커스 복귀 시 실제 시스템 값 다시 읽기
+  window.addEventListener('focus', () => refresh().catch(() => {}));
+});
