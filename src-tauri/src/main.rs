@@ -48,6 +48,47 @@ extern "system" {
     fn Beep(freq: u32, duration: u32) -> i32;
 }
 
+// ─────────────────────── 한자키 차단 (저수준 키보드 훅) ───────────────────────
+
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// 한자키 차단 on/off — 훅 프로시저가 매 키 입력마다 확인
+static BLOCK_HANJA: AtomicBool = AtomicBool::new(false);
+
+const WH_KEYBOARD_LL: i32 = 13;
+const VK_HANJA: u32 = 0x19;
+
+#[repr(C)]
+#[allow(non_snake_case)]
+struct KBDLLHOOKSTRUCT {
+    vkCode: u32,
+    scanCode: u32,
+    flags: u32,
+    time: u32,
+    dwExtraInfo: usize,
+}
+
+#[link(name = "user32")]
+extern "system" {
+    fn SetWindowsHookExW(
+        id_hook: i32,
+        lpfn: unsafe extern "system" fn(i32, usize, isize) -> isize,
+        hmod: isize,
+        thread_id: u32,
+    ) -> isize;
+    fn CallNextHookEx(hhk: isize, code: i32, wparam: usize, lparam: isize) -> isize;
+}
+
+unsafe extern "system" fn hanja_hook_proc(code: i32, wparam: usize, lparam: isize) -> isize {
+    if code >= 0 && BLOCK_HANJA.load(Ordering::Relaxed) {
+        let kb = &*(lparam as *const KBDLLHOOKSTRUCT);
+        if kb.vkCode == VK_HANJA {
+            return 1; // 한자키 입력을 시스템에서 삼킴
+        }
+    }
+    CallNextHookEx(0, code, wparam, lparam)
+}
+
 // ─────────────────────────────── 데이터 모델 ───────────────────────────────
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -68,6 +109,7 @@ struct AppConfig {
     unit: String,          // "ms" | "s"
     persist_registry: bool, // SPIF_UPDATEINIFILE 사용 여부 (재부팅 후에도 유지)
     beep_on_hotkey: bool,   // 단축키 동작 시 비프음
+    block_hanja: bool,      // 한자키(VK_HANJA) 입력 차단
     toggle_hotkey: Option<String>,
     active_preset: Option<String>,
     presets: Vec<Preset>,
@@ -79,6 +121,7 @@ impl Default for AppConfig {
             unit: "s".into(),
             persist_registry: true,
             beep_on_hotkey: true,
+            block_hanja: false,
             toggle_hotkey: Some("ctrl+alt+f9".into()),
             active_preset: None,
             presets: vec![
@@ -413,6 +456,7 @@ fn save_config(
     config: AppConfig,
 ) -> Result<Vec<String>, String> {
     let failed = sync_hotkeys(&app, &config);
+    BLOCK_HANJA.store(config.block_hanja, Ordering::Relaxed);
     {
         let mut cfg = state.lock().unwrap();
         *cfg = config;
@@ -470,6 +514,12 @@ fn main() {
             let cfg = load_config(&handle);
             app.manage(Mutex::new(cfg.clone()));
             sync_hotkeys(&handle, &cfg);
+
+            // 한자키 차단 훅 설치 (차단 여부는 BLOCK_HANJA로 실시간 제어)
+            BLOCK_HANJA.store(cfg.block_hanja, Ordering::Relaxed);
+            unsafe {
+                SetWindowsHookExW(WH_KEYBOARD_LL, hanja_hook_proc, 0, 0);
+            }
 
             // ── 트레이 아이콘 ──
             let show_i = MenuItem::with_id(app, "show", "열기", true, None::<&str>)?;

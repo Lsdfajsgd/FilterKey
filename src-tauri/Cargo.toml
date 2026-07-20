@@ -1,6 +1,6 @@
 [package]
 name = "filterkey"
-version = "0.2.0"
+version = "0.3.0"
 description = "메이플 필터키 매니저 — 재부팅 없이 필터키 값을 즉시 적용"
 edition = "2021"
 
@@ -15,8 +15,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [profile.release]
+# 빌드 속도 우선: 풀 LTO 대신 thin LTO (바이너리 수백 KB 커지는 대신 빌드 수 분 → 수십 초)
 panic = "abort"
-codegen-units = 1
-lto = true
+lto = "thin"
 opt-level = "s"
 strip = true

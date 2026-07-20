@@ -130,6 +130,7 @@ function renderDetail() {
     $('unit-s').classList.toggle('active', config.unit === 's');
     $('opt-persist').checked = config.persistRegistry;
     $('opt-beep').checked = config.beepOnHotkey;
+    $('opt-hanja').checked = !!config.blockHanja;
     const btn = $('toggle-hotkey-btn');
     btn.textContent = config.toggleHotkey ? prettyHotkey(config.toggleHotkey) : '지정 안 됨';
     btn.classList.toggle('set', !!config.toggleHotkey);
@@ -445,6 +446,11 @@ window.addEventListener('DOMContentLoaded', async () => {
   $('opt-beep').addEventListener('change', (e) => {
     config.beepOnHotkey = e.target.checked;
     saveConfig();
+  });
+  $('opt-hanja').addEventListener('change', (e) => {
+    config.blockHanja = e.target.checked;
+    saveConfig();
+    toast(e.target.checked ? '한자키 차단 켜짐 — 앱이 실행 중인 동안 한자키가 무시돼요' : '한자키 차단 꺼짐');
   });
 
   // 창 포커스 복귀 시 실제 시스템 값 다시 읽기
