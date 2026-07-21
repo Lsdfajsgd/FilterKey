@@ -89,6 +89,52 @@ unsafe extern "system" fn hanja_hook_proc(code: i32, wparam: usize, lparam: isiz
     CallNextHookEx(0, code, wparam, lparam)
 }
 
+// ─────────────────── 관리자 권한 (게임이 관리자로 실행될 때 필요) ───────────────────
+
+#[link(name = "shell32")]
+extern "system" {
+    fn IsUserAnAdmin() -> i32;
+    fn ShellExecuteW(
+        hwnd: isize,
+        operation: *const u16,
+        file: *const u16,
+        parameters: *const u16,
+        directory: *const u16,
+        show_cmd: i32,
+    ) -> isize;
+}
+
+fn to_wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[tauri::command]
+fn is_admin() -> bool {
+    unsafe { IsUserAnAdmin() != 0 }
+}
+
+#[tauri::command]
+fn restart_as_admin(app: AppHandle) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe_w = to_wide(&exe.to_string_lossy());
+    let verb = to_wide("runas");
+    let r = unsafe {
+        ShellExecuteW(
+            0,
+            verb.as_ptr(),
+            exe_w.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            1, // SW_SHOWNORMAL
+        )
+    };
+    if r <= 32 {
+        return Err("관리자 권한 실행이 취소되었거나 실패했습니다".into());
+    }
+    app.exit(0);
+    Ok(())
+}
+
 // ─────────────────────────────── 데이터 모델 ───────────────────────────────
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -578,7 +624,9 @@ fn main() {
             apply_preset,
             save_config,
             check_update,
-            install_update
+            install_update,
+            is_admin,
+            restart_as_admin
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

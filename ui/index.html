@@ -108,10 +108,16 @@
             <label class="switch small"><input type="checkbox" id="opt-beep" /><span class="slider-sw"></span></label>
           </div>
         </div>
-        <div class="vrow" title="우측 Ctrl에 겹쳐 있는 한자키 입력을 시스템 단계에서 무시합니다 · 게임 중 한자 입력창 때문에 화면이 전환되는 문제 방지 · 메이플헬퍼가 실행 중일 때만 동작 (종료하면 원래대로)">
+        <div class="vrow" title="우측 Ctrl에 겹쳐 있는 한자키 입력을 시스템 단계에서 무시합니다 · 게임 중 한자 입력창 때문에 화면이 전환되는 문제 방지 · 메이플헬퍼가 실행 중일 때만 동작 (종료하면 원래대로) · 게임이 관리자 권한이면 아래 [관리자 권한으로 재시작]이 필요합니다">
           <div class="lbl"><label>한자키 차단</label><span class="regname">VK_HANJA 저수준 훅</span></div>
           <div class="row-right">
             <label class="switch small"><input type="checkbox" id="opt-hanja" /><span class="slider-sw"></span></label>
+          </div>
+        </div>
+        <div class="vrow" title="메이플스토리처럼 관리자 권한으로 실행되는 게임에는 일반 권한 앱의 키 차단이 적용되지 않습니다 (윈도우 보안 정책 UIPI). 관리자 권한으로 재시작하면 게임 안에서도 한자키 차단이 동작합니다.">
+          <div class="lbl"><label>관리자 권한</label><span class="regname" id="admin-state">확인 중…</span></div>
+          <div class="row-right">
+            <button class="btn tiny" id="btn-admin">관리자 권한으로 재시작</button>
           </div>
         </div>
       </div>

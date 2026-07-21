@@ -450,7 +450,30 @@ window.addEventListener('DOMContentLoaded', async () => {
   $('opt-hanja').addEventListener('change', (e) => {
     config.blockHanja = e.target.checked;
     saveConfig();
-    toast(e.target.checked ? '한자키 차단 켜짐 — 앱이 실행 중인 동안 한자키가 무시돼요' : '한자키 차단 꺼짐');
+    if (e.target.checked && !isAdmin) {
+      toast('⚠ 게임이 관리자 권한으로 실행 중이면 차단이 안 먹혀요 — 아래 [관리자 권한으로 재시작]을 눌러주세요', 5000);
+    } else {
+      toast(e.target.checked ? '한자키 차단 켜짐 — 앱이 실행 중인 동안 한자키가 무시돼요' : '한자키 차단 꺼짐');
+    }
+  });
+
+  // ─────────── 관리자 권한 표시/재시작 ───────────
+  let isAdmin = false;
+  (async () => {
+    try {
+      isAdmin = await invoke('is_admin');
+      $('admin-state').textContent = isAdmin
+        ? '관리자 권한으로 실행 중 ✓ (게임에서도 차단 동작)'
+        : '일반 권한 — 관리자 권한 게임에는 차단이 적용 안 됨';
+      if (isAdmin) $('btn-admin').classList.add('hidden');
+    } catch (_) {}
+  })();
+  $('btn-admin').addEventListener('click', async () => {
+    try {
+      await invoke('restart_as_admin'); // UAC 승인 시 앱이 관리자 권한으로 다시 뜸
+    } catch (e) {
+      toast('' + e, 3500);
+    }
   });
 
   // 창 포커스 복귀 시 실제 시스템 값 다시 읽기
