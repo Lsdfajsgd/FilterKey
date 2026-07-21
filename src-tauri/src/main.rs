@@ -48,45 +48,132 @@ extern "system" {
     fn Beep(freq: u32, duration: u32) -> i32;
 }
 
-// ─────────────────────── 한자키 차단 (저수준 키보드 훅) ───────────────────────
+// ──────────── 한자키 제거 (Scancode Map — OS 커널 차원, 재부팅 필요) ────────────
+// 우측 Ctrl(E0 1D)을 왼쪽 Ctrl(1D)로 리매핑: 드라이버가 한자로 번역하기 전 단계라
+// Ctrl 기능은 그대로 살아있고 한자 기능만 사라진다. 훅/상주 프로세스 불필요.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-
-/// 한자키 차단 on/off — 훅 프로시저가 매 키 입력마다 확인
-static BLOCK_HANJA: AtomicBool = AtomicBool::new(false);
-
-const WH_KEYBOARD_LL: i32 = 13;
-const VK_HANJA: u32 = 0x19;
-
-#[repr(C)]
-#[allow(non_snake_case)]
-struct KBDLLHOOKSTRUCT {
-    vkCode: u32,
-    scanCode: u32,
-    flags: u32,
-    time: u32,
-    dwExtraInfo: usize,
-}
-
-#[link(name = "user32")]
+#[link(name = "advapi32")]
 extern "system" {
-    fn SetWindowsHookExW(
-        id_hook: i32,
-        lpfn: unsafe extern "system" fn(i32, usize, isize) -> isize,
-        hmod: isize,
-        thread_id: u32,
-    ) -> isize;
-    fn CallNextHookEx(hhk: isize, code: i32, wparam: usize, lparam: isize) -> isize;
+    fn RegOpenKeyExW(hkey: isize, sub_key: *const u16, options: u32, sam: u32, result: *mut isize) -> i32;
+    fn RegQueryValueExW(hkey: isize, name: *const u16, reserved: *mut u32, typ: *mut u32, data: *mut u8, len: *mut u32) -> i32;
+    fn RegSetValueExW(hkey: isize, name: *const u16, reserved: u32, typ: u32, data: *const u8, len: u32) -> i32;
+    fn RegDeleteValueW(hkey: isize, name: *const u16) -> i32;
+    fn RegCloseKey(hkey: isize) -> i32;
 }
 
-unsafe extern "system" fn hanja_hook_proc(code: i32, wparam: usize, lparam: isize) -> isize {
-    if code >= 0 && BLOCK_HANJA.load(Ordering::Relaxed) {
-        let kb = &*(lparam as *const KBDLLHOOKSTRUCT);
-        if kb.vkCode == VK_HANJA {
-            return 1; // 한자키 입력을 시스템에서 삼킴
+const HKLM: isize = 0x80000002u32 as i32 as isize;
+const KEY_READ: u32 = 0x20019;
+const KEY_SET_VALUE: u32 = 0x0002;
+const REG_BINARY_TYPE: u32 = 3;
+const ERROR_FILE_NOT_FOUND: i32 = 2;
+const ERROR_ACCESS_DENIED: i32 = 5;
+const SCANCODE_KEY: &str = "SYSTEM\\CurrentControlSet\\Control\\Keyboard Layout";
+const SCANCODE_VALUE: &str = "Scancode Map";
+
+/// 우리가 추가/제거하는 매핑: (물리 키 스캔코드, 새로 출력할 스캔코드)
+/// - 0xE01D(우측 Ctrl) → 0x001D(왼쪽 Ctrl): 한국어 101키 종류1 배열에서 우측 Ctrl이 한자로 동작하는 것을 순수 Ctrl로 변경
+/// - 0x0071(전용 한자키) → 0x0000: 전용 한자키가 있는 103/106키 배열에서 한자키 비활성화
+const OUR_SCANCODE_ENTRIES: [(u16, u16); 2] = [(0xE01D, 0x001D), (0x0071, 0x0000)];
+
+fn open_scancode_key(sam: u32) -> Result<isize, String> {
+    let path = to_wide(SCANCODE_KEY);
+    let mut hkey: isize = 0;
+    let r = unsafe { RegOpenKeyExW(HKLM, path.as_ptr(), 0, sam, &mut hkey) };
+    if r != 0 {
+        return Err(format!("레지스트리 키 열기 실패 (코드 {r})"));
+    }
+    Ok(hkey)
+}
+
+/// Scancode Map 값을 (원본, 새값) 목록으로 파싱. 값이 없으면 빈 목록.
+fn read_scancode_entries() -> Result<Vec<(u16, u16)>, String> {
+    let hkey = open_scancode_key(KEY_READ)?;
+    let name = to_wide(SCANCODE_VALUE);
+    let mut len: u32 = 0;
+    let r = unsafe {
+        RegQueryValueExW(hkey, name.as_ptr(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), &mut len)
+    };
+    if r == ERROR_FILE_NOT_FOUND {
+        unsafe { RegCloseKey(hkey) };
+        return Ok(Vec::new());
+    }
+    if r != 0 {
+        unsafe { RegCloseKey(hkey) };
+        return Err(format!("레지스트리 값 조회 실패 (코드 {r})"));
+    }
+    let mut buf = vec![0u8; len as usize];
+    let r = unsafe {
+        RegQueryValueExW(hkey, name.as_ptr(), std::ptr::null_mut(), std::ptr::null_mut(), buf.as_mut_ptr(), &mut len)
+    };
+    unsafe { RegCloseKey(hkey) };
+    if r != 0 {
+        return Err(format!("레지스트리 값 읽기 실패 (코드 {r})"));
+    }
+    // 형식: 8바이트 헤더(0) + DWORD 개수 + 매핑 DWORD들(low=새값, high=원본) + 종결자(0)
+    let mut entries = Vec::new();
+    if buf.len() >= 12 {
+        let mut off = 12;
+        while off + 4 <= buf.len() {
+            let new = u16::from_le_bytes([buf[off], buf[off + 1]]);
+            let orig = u16::from_le_bytes([buf[off + 2], buf[off + 3]]);
+            if new == 0 && orig == 0 {
+                break; // 종결자
+            }
+            entries.push((orig, new));
+            off += 4;
         }
     }
-    CallNextHookEx(0, code, wparam, lparam)
+    Ok(entries)
+}
+
+fn write_scancode_entries(entries: &[(u16, u16)]) -> Result<(), String> {
+    let hkey = open_scancode_key(KEY_SET_VALUE)?;
+    let name = to_wide(SCANCODE_VALUE);
+    let r = if entries.is_empty() {
+        let r = unsafe { RegDeleteValueW(hkey, name.as_ptr()) };
+        if r == ERROR_FILE_NOT_FOUND { 0 } else { r }
+    } else {
+        let mut blob = vec![0u8; 8]; // version + flags
+        blob.extend(((entries.len() as u32) + 1).to_le_bytes());
+        for (orig, new) in entries {
+            blob.extend(new.to_le_bytes());
+            blob.extend(orig.to_le_bytes());
+        }
+        blob.extend([0u8; 4]); // 종결자
+        unsafe { RegSetValueExW(hkey, name.as_ptr(), 0, REG_BINARY_TYPE, blob.as_ptr(), blob.len() as u32) }
+    };
+    unsafe { RegCloseKey(hkey) };
+    if r == ERROR_ACCESS_DENIED {
+        return Err("관리자 권한이 필요합니다".into());
+    }
+    if r != 0 {
+        return Err(format!("레지스트리 쓰기 실패 (코드 {r})"));
+    }
+    Ok(())
+}
+
+/// 현재 Scancode Map에 우리의 우측 Ctrl 리매핑이 등록되어 있는지
+#[tauri::command]
+fn get_hanja_removal() -> bool {
+    read_scancode_entries()
+        .map(|v| v.iter().any(|e| e.0 == 0xE01D && e.1 == 0x001D))
+        .unwrap_or(false)
+}
+
+/// 한자키 제거 등록/해제 — 기존 Scancode Map의 다른 매핑은 보존(병합)
+#[tauri::command]
+fn set_hanja_removal(enable: bool) -> Result<(), String> {
+    let mut entries = read_scancode_entries()?;
+    if enable {
+        for (orig, new) in OUR_SCANCODE_ENTRIES {
+            if !entries.iter().any(|e| e.0 == orig) {
+                entries.push((orig, new));
+            }
+        }
+    } else {
+        entries.retain(|e| !OUR_SCANCODE_ENTRIES.iter().any(|o| o.0 == e.0));
+    }
+    write_scancode_entries(&entries)
 }
 
 // ─────────────────── 관리자 권한 (게임이 관리자로 실행될 때 필요) ───────────────────
@@ -155,7 +242,6 @@ struct AppConfig {
     unit: String,          // "ms" | "s"
     persist_registry: bool, // SPIF_UPDATEINIFILE 사용 여부 (재부팅 후에도 유지)
     beep_on_hotkey: bool,   // 단축키 동작 시 비프음
-    block_hanja: bool,      // 한자키(VK_HANJA) 입력 차단
     toggle_hotkey: Option<String>,
     active_preset: Option<String>,
     presets: Vec<Preset>,
@@ -167,7 +253,6 @@ impl Default for AppConfig {
             unit: "s".into(),
             persist_registry: true,
             beep_on_hotkey: true,
-            block_hanja: false,
             toggle_hotkey: Some("ctrl+alt+f9".into()),
             active_preset: None,
             presets: vec![
@@ -502,7 +587,6 @@ fn save_config(
     config: AppConfig,
 ) -> Result<Vec<String>, String> {
     let failed = sync_hotkeys(&app, &config);
-    BLOCK_HANJA.store(config.block_hanja, Ordering::Relaxed);
     {
         let mut cfg = state.lock().unwrap();
         *cfg = config;
@@ -560,12 +644,6 @@ fn main() {
             let cfg = load_config(&handle);
             app.manage(Mutex::new(cfg.clone()));
             sync_hotkeys(&handle, &cfg);
-
-            // 한자키 차단 훅 설치 (차단 여부는 BLOCK_HANJA로 실시간 제어)
-            BLOCK_HANJA.store(cfg.block_hanja, Ordering::Relaxed);
-            unsafe {
-                SetWindowsHookExW(WH_KEYBOARD_LL, hanja_hook_proc, 0, 0);
-            }
 
             // ── 트레이 아이콘 ──
             let show_i = MenuItem::with_id(app, "show", "열기", true, None::<&str>)?;
@@ -626,7 +704,9 @@ fn main() {
             check_update,
             install_update,
             is_admin,
-            restart_as_admin
+            restart_as_admin,
+            get_hanja_removal,
+            set_hanja_removal
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

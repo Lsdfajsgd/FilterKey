@@ -108,13 +108,13 @@
             <label class="switch small"><input type="checkbox" id="opt-beep" /><span class="slider-sw"></span></label>
           </div>
         </div>
-        <div class="vrow" title="우측 Ctrl에 겹쳐 있는 한자키 입력을 시스템 단계에서 무시합니다 · 게임 중 한자 입력창 때문에 화면이 전환되는 문제 방지 · 메이플헬퍼가 실행 중일 때만 동작 (종료하면 원래대로) · 게임이 관리자 권한이면 아래 [관리자 권한으로 재시작]이 필요합니다">
-          <div class="lbl"><label>한자키 차단</label><span class="regname">VK_HANJA 저수준 훅</span></div>
+        <div class="vrow" title="우측 Ctrl의 한자 기능만 OS(커널) 차원에서 제거합니다 — 우측 Ctrl은 순수 Ctrl 키로 정상 동작 · 키 입력을 가로채지 않고, 상주 프로그램/훅 없이 동작해서 게임에 보일 것이 없음 · 켜고 끌 때 재부팅 1회 필요 · 등록에 관리자 권한 필요 · 기존 Scancode Map 설정은 보존됩니다">
+          <div class="lbl"><label>한자키 제거 (Ctrl 기능은 유지)</label><span class="regname">Scancode Map · 재부팅 후 적용</span></div>
           <div class="row-right">
-            <label class="switch small"><input type="checkbox" id="opt-hanja" /><span class="slider-sw"></span></label>
+            <label class="switch small"><input type="checkbox" id="opt-hanja-perm" /><span class="slider-sw"></span></label>
           </div>
         </div>
-        <div class="vrow" title="메이플스토리처럼 관리자 권한으로 실행되는 게임에는 일반 권한 앱의 키 차단이 적용되지 않습니다 (윈도우 보안 정책 UIPI). 관리자 권한으로 재시작하면 게임 안에서도 한자키 차단이 동작합니다.">
+        <div class="vrow" title="한자키 제거를 레지스트리(HKLM)에 등록/해제하려면 관리자 권한이 필요합니다 · 한 번 등록하고 재부팅하면 메이플헬퍼를 켜두지 않아도 항상 적용됩니다">
           <div class="lbl"><label>관리자 권한</label><span class="regname" id="admin-state">확인 중…</span></div>
           <div class="row-right">
             <button class="btn tiny" id="btn-admin">관리자 권한으로 재시작</button>

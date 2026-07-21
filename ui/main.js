@@ -7,6 +7,8 @@ const $ = (id) => document.getElementById(id);
 let config = null;              // AppConfig (camelCase)
 let sys = null;                 // SysState
 let sel = 'custom';             // 'custom' | presetId | 'settings'
+let isAdmin = false;            // 관리자 권한 여부
+let hanjaPerm = false;          // Scancode Map 한자키 제거 등록 여부
 const draft = { wait: 0, delay: 0, repeat: 0, bounce: 0 }; // 편집 중 값 (ms)
 const FIELDS = ['wait', 'delay', 'repeat', 'bounce'];
 
@@ -130,7 +132,7 @@ function renderDetail() {
     $('unit-s').classList.toggle('active', config.unit === 's');
     $('opt-persist').checked = config.persistRegistry;
     $('opt-beep').checked = config.beepOnHotkey;
-    $('opt-hanja').checked = !!config.blockHanja;
+    $('opt-hanja-perm').checked = hanjaPerm;
     const btn = $('toggle-hotkey-btn');
     btn.textContent = config.toggleHotkey ? prettyHotkey(config.toggleHotkey) : '지정 안 됨';
     btn.classList.toggle('set', !!config.toggleHotkey);
@@ -447,25 +449,39 @@ window.addEventListener('DOMContentLoaded', async () => {
     config.beepOnHotkey = e.target.checked;
     saveConfig();
   });
-  $('opt-hanja').addEventListener('change', (e) => {
-    config.blockHanja = e.target.checked;
-    saveConfig();
-    if (e.target.checked && !isAdmin) {
-      toast('⚠ 게임이 관리자 권한으로 실행 중이면 차단이 안 먹혀요 — 아래 [관리자 권한으로 재시작]을 눌러주세요', 5000);
-    } else {
-      toast(e.target.checked ? '한자키 차단 켜짐 — 앱이 실행 중인 동안 한자키가 무시돼요' : '한자키 차단 꺼짐');
+  // ─────────── 한자키 제거 (Scancode Map) ───────────
+  $('opt-hanja-perm').addEventListener('change', async (e) => {
+    const want = e.target.checked;
+    try {
+      await invoke('set_hanja_removal', { enable: want });
+      hanjaPerm = want;
+      toast(
+        want
+          ? '한자키 제거 등록됨 — 재부팅하면 우측 Ctrl이 순수 Ctrl로 동작해요 (한자 기능만 사라짐)'
+          : '한자키 제거 해제됨 — 재부팅하면 원래대로 돌아와요',
+        5000
+      );
+    } catch (err) {
+      e.target.checked = !want;
+      toast(
+        '실패: ' + err + (isAdmin ? '' : ' — [관리자 권한으로 재시작] 후 다시 시도하세요'),
+        5000
+      );
     }
   });
 
   // ─────────── 관리자 권한 표시/재시작 ───────────
-  let isAdmin = false;
   (async () => {
     try {
       isAdmin = await invoke('is_admin');
       $('admin-state').textContent = isAdmin
-        ? '관리자 권한으로 실행 중 ✓ (게임에서도 차단 동작)'
-        : '일반 권한 — 관리자 권한 게임에는 차단이 적용 안 됨';
+        ? '관리자 권한으로 실행 중 ✓'
+        : '일반 권한 — 한자키 제거 등록에는 관리자 권한 필요';
       if (isAdmin) $('btn-admin').classList.add('hidden');
+    } catch (_) {}
+    try {
+      hanjaPerm = await invoke('get_hanja_removal');
+      $('opt-hanja-perm').checked = hanjaPerm;
     } catch (_) {}
   })();
   $('btn-admin').addEventListener('click', async () => {
