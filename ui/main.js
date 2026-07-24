@@ -41,11 +41,13 @@ function prettyHotkey(hk) {
     .split('+')
     .map((t) => {
       const u = t.trim();
+      const low = u.toLowerCase();
       if (/^f\d+$/i.test(u)) return u.toUpperCase();
-      if (u.toLowerCase() === 'ctrl') return 'Ctrl';
-      if (u.toLowerCase() === 'alt') return 'Alt';
-      if (u.toLowerCase() === 'shift') return 'Shift';
-      if (u.toLowerCase() === 'super') return 'Win';
+      if (low === 'ctrl') return 'Ctrl';
+      if (low === 'alt') return 'Alt';
+      if (low === 'shift') return 'Shift';
+      if (low === 'super') return 'Win';
+      if (KEY_DISPLAY[low]) return KEY_DISPLAY[low];
       return u.length === 1 ? u.toUpperCase() : u;
     })
     .join('+');
@@ -204,20 +206,32 @@ function commitDraftToPreset(p) {
 
 // ─────────────────────────── 단축키 캡처 ───────────────────────────
 
+// e.code → 전역 단축키 플러그인이 파싱 가능한 키 이름 (특수키)
 const CODE_MAP = {
-  Space: 'Space', Home: 'Home', End: 'End',
-  PageUp: 'PageUp', PageDown: 'PageDown',
+  Space: 'Space', Enter: 'Enter', Tab: 'Tab', CapsLock: 'CapsLock',
+  Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown',
   Insert: 'Insert', Delete: 'Delete',
   ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
-  Minus: '-', Equal: '=', Comma: ',', Period: '.', Slash: '/',
-  Semicolon: ';', Quote: "'", Backquote: '`',
-  BracketLeft: '[', BracketRight: ']', Backslash: '\\',
+  Minus: 'Minus', Equal: 'Equal', Comma: 'Comma', Period: 'Period', Slash: 'Slash',
+  Semicolon: 'Semicolon', Quote: 'Quote', Backquote: 'Backquote',
+  BracketLeft: 'BracketLeft', BracketRight: 'BracketRight', Backslash: 'Backslash',
+};
+
+// 표시용 (파싱 이름 → 사람이 읽기 쉬운 기호/한글)
+const KEY_DISPLAY = {
+  minus: '-', equal: '=', comma: ',', period: '.', slash: '/',
+  semicolon: ';', quote: "'", backquote: '`',
+  bracketleft: '[', bracketright: ']', backslash: '\\',
+  space: 'Space', enter: 'Enter', tab: 'Tab', capslock: 'CapsLock',
+  pageup: 'PageUp', pagedown: 'PageDown',
 };
 
 let captureCallback = null;
+let captureAllowSingle = false;
 
-function captureHotkey(cb) {
+function captureHotkey(cb, allowSingle = false) {
   captureCallback = cb;
+  captureAllowSingle = allowSingle;
   $('hotkey-overlay').classList.remove('hidden');
 }
 
@@ -247,7 +261,14 @@ window.addEventListener(
     else if (/^Digit(\d)$/.test(e.code)) key = e.code.slice(5);
     else if (/^F(\d{1,2})$/.test(e.code)) key = e.code.toLowerCase();
     else if (CODE_MAP[e.code]) key = CODE_MAP[e.code];
-    if (!key) return;
+
+    // 수식키 단독(Shift/Ctrl/Alt만 누름)
+    if (!key) {
+      if (captureAllowSingle && /^(Shift|Control|Alt|Meta)(Left|Right)$/.test(e.code)) {
+        toast('단독 Shift/Ctrl/Alt는 전역 단축키로 등록할 수 없어요 — 단일 키(예: CapsLock, ` 등)나 조합을 사용하세요', 4500);
+      }
+      return;
+    }
 
     const mods = [];
     if (e.ctrlKey) mods.push('ctrl');
@@ -255,7 +276,8 @@ window.addEventListener(
     if (e.shiftKey) mods.push('shift');
     if (e.metaKey) mods.push('super');
 
-    if (mods.length === 0 && !/^f\d{1,2}$/.test(key)) {
+    // 일반 키 단독은 게임 입력과 충돌 → 기본은 막지만, allowSingle이면 허용(타이머용)
+    if (mods.length === 0 && !/^f\d{1,2}$/.test(key) && !captureAllowSingle) {
       toast('일반 키 단독은 게임 입력과 충돌해요 — Ctrl/Alt/Shift 조합 또는 F키를 사용하세요');
       return;
     }
@@ -445,11 +467,12 @@ window.addEventListener('DOMContentLoaded', async () => {
   $('timer-hotkey-btn').addEventListener('click', () => {
     const p = selPreset();
     if (!p) return;
+    // 타이머는 단일키/조합 모두 허용 (allowSingle = true)
     captureHotkey((combo) => {
       p.timerHotkey = combo;
       saveConfig();
       renderDetail();
-    });
+    }, true);
   });
 
   // 타이머 지금 시작 (버튼)

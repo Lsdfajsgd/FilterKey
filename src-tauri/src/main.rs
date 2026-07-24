@@ -458,10 +458,11 @@ fn start_timer_impl(app: &AppHandle, seconds: u32) {
         if TIMER_GEN.load(Ordering::SeqCst) != generation {
             return;
         }
+        // "띠띠" — 짧은 알림음 두 번
         unsafe {
-            Beep(880, 180);
-            Beep(1175, 180);
-            Beep(1568, 320);
+            Beep(1760, 90);
+            std::thread::sleep(std::time::Duration::from_millis(70));
+            Beep(1760, 90);
         }
         let _ = handle.emit("timer-done", ());
     });
