@@ -137,6 +137,9 @@ function renderDetail() {
     $('opt-persist').checked = config.persistRegistry;
     $('opt-beep').checked = config.beepOnHotkey;
     $('opt-hanja-perm').checked = hanjaPerm;
+    const vol = config.alarmVolume ?? 85;
+    $('sl-volume').value = vol;
+    $('vol-label').textContent = vol;
     const btn = $('toggle-hotkey-btn');
     btn.textContent = config.toggleHotkey ? prettyHotkey(config.toggleHotkey) : '지정 안 됨';
     btn.classList.toggle('set', !!config.toggleHotkey);
@@ -553,6 +556,23 @@ window.addEventListener('DOMContentLoaded', async () => {
     config.beepOnHotkey = e.target.checked;
     saveConfig();
   });
+
+  // ─────────── 알림음 볼륨 ───────────
+  // 드래그 중엔 라벨만 갱신, 놓으면 저장 + 그 볼륨으로 미리듣기
+  $('sl-volume').addEventListener('input', (e) => {
+    $('vol-label').textContent = e.target.value;
+  });
+  $('sl-volume').addEventListener('change', (e) => {
+    const v = parseInt(e.target.value, 10) || 0;
+    config.alarmVolume = v;
+    saveConfig();
+    invoke('test_alarm', { volume: v }).catch(() => {});
+  });
+  $('vol-test').addEventListener('click', () => {
+    const v = parseInt($('sl-volume').value, 10) || 0;
+    invoke('test_alarm', { volume: v }).catch(() => {});
+  });
+
   // ─────────── 한자키 제거 (Scancode Map) ───────────
   $('opt-hanja-perm').addEventListener('change', async (e) => {
     const want = e.target.checked;

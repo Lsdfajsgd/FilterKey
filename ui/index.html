@@ -119,6 +119,13 @@
             <label class="switch small"><input type="checkbox" id="opt-beep" /><span class="slider-sw"></span></label>
           </div>
         </div>
+        <div class="vrow" title="타이머 알림음(띠띠)의 크기 · 슬라이더를 놓으면 그 볼륨으로 미리 들려줍니다 · 🔊 버튼으로 언제든 테스트">
+          <div class="lbl"><label>알림음 볼륨</label><span class="regname"><span id="vol-label">85</span>%</span></div>
+          <div class="row-right">
+            <input type="range" id="sl-volume" min="0" max="100" step="1" style="width:120px" />
+            <button class="btn tiny" id="vol-test" title="현재 볼륨으로 알림음 재생">🔊 테스트</button>
+          </div>
+        </div>
         <div class="vrow" title="우측 Ctrl의 한자 기능만 OS(커널) 차원에서 제거합니다 — 우측 Ctrl은 순수 Ctrl 키로 정상 동작 · 키 입력을 가로채지 않고, 상주 프로그램/훅 없이 동작해서 게임에 보일 것이 없음 · 켜고 끌 때 재부팅 1회 필요 · 등록에 관리자 권한 필요 · 기존 Scancode Map 설정은 보존됩니다">
           <div class="lbl"><label>한자키 제거 (Ctrl 기능은 유지)</label><span class="regname">Scancode Map · 재부팅 후 적용</span></div>
           <div class="row-right">

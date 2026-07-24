@@ -48,6 +48,75 @@ extern "system" {
     fn Beep(freq: u32, duration: u32) -> i32;
 }
 
+#[link(name = "winmm")]
+extern "system" {
+    // 메모리 WAV 재생 (볼륨 조절을 위해 Beep 대신 사용)
+    fn PlaySoundW(sound: *const u8, hmod: isize, flags: u32) -> i32;
+}
+const SND_SYNC: u32 = 0x0000;
+const SND_MEMORY: u32 = 0x0004;
+
+/// 1760Hz 짧은 톤 두 번("띠띠")을 volume(0~100)에 맞춘 진폭으로 WAV 바이트 생성
+fn build_alarm_wav(volume: u32) -> Vec<u8> {
+    use std::f64::consts::PI;
+    let sample_rate: u32 = 44100;
+    let freq = 1760.0f64;
+    let vol = (volume.min(100) as f64) / 100.0;
+    let amp = vol * 32767.0 * 0.95;
+    let beep_samples = sample_rate * 90 / 1000; // 90ms
+    let gap_samples = sample_rate * 70 / 1000; // 70ms
+    let fade = (sample_rate * 3 / 1000) as f64; // 3ms 페이드로 클릭음 제거
+
+    let mut samples: Vec<i16> = Vec::new();
+    for b in 0..2 {
+        for n in 0..beep_samples {
+            let t = n as f64 / sample_rate as f64;
+            let env = {
+                let ni = n as f64;
+                let rem = (beep_samples - n) as f64;
+                (ni / fade).min(rem / fade).min(1.0)
+            };
+            let s = amp * env * (2.0 * PI * freq * t).sin();
+            samples.push(s as i16);
+        }
+        if b == 0 {
+            for _ in 0..gap_samples {
+                samples.push(0);
+            }
+        }
+    }
+
+    let data_bytes = samples.len() * 2;
+    let mut wav = Vec::with_capacity(44 + data_bytes);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&((36 + data_bytes) as u32).to_le_bytes());
+    wav.extend_from_slice(b"WAVE");
+    wav.extend_from_slice(b"fmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    wav.extend_from_slice(&1u16.to_le_bytes()); // mono
+    wav.extend_from_slice(&sample_rate.to_le_bytes());
+    wav.extend_from_slice(&(sample_rate * 2).to_le_bytes()); // byte rate
+    wav.extend_from_slice(&2u16.to_le_bytes()); // block align
+    wav.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&(data_bytes as u32).to_le_bytes());
+    for s in samples {
+        wav.extend_from_slice(&s.to_le_bytes());
+    }
+    wav
+}
+
+/// 알림음 재생 (볼륨 조절 가능). 별도 스레드에서 동기 재생하며 버퍼를 살려둔다.
+fn play_alarm(volume: u32) {
+    std::thread::spawn(move || {
+        let wav = build_alarm_wav(volume);
+        unsafe {
+            PlaySoundW(wav.as_ptr(), 0, SND_MEMORY | SND_SYNC);
+        }
+    });
+}
+
 // ───────── 타이머 트리거용 패시브 키보드 훅 (키를 삼키지 않고 감지만) ─────────
 // 스킬키를 누르면 그 입력은 게임으로 그대로 전달되고, 동시에 해당 프리셋의 타이머만 시작.
 
@@ -287,6 +356,7 @@ struct AppConfig {
     unit: String,          // "ms" | "s"
     persist_registry: bool, // SPIF_UPDATEINIFILE 사용 여부 (재부팅 후에도 유지)
     beep_on_hotkey: bool,   // 단축키 동작 시 비프음
+    alarm_volume: u32,      // 타이머 알림음 볼륨 (0~100)
     toggle_hotkey: Option<String>,
     active_preset: Option<String>,
     presets: Vec<Preset>,
@@ -298,6 +368,7 @@ impl Default for AppConfig {
             unit: "s".into(),
             persist_registry: true,
             beep_on_hotkey: true,
+            alarm_volume: 85,
             toggle_hotkey: Some("ctrl+alt+f9".into()),
             active_preset: None,
             presets: vec![
@@ -469,8 +540,9 @@ fn beep_feedback(app: &AppHandle, freq: u32) {
 // 프리셋별 타이머: 단축키(또는 버튼)를 누른 시점부터 지정 시간이 지나면 알림음.
 // 새 타이머를 시작하면 이전 타이머는 취소된다(세대 번호 비교).
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 static TIMER_GEN: AtomicU64 = AtomicU64::new(0);
+static ALARM_VOLUME: AtomicU32 = AtomicU32::new(85);
 
 /// 지정한 초가 지난 뒤 알림음(3단 비프)을 울린다. 0초면 아무것도 안 함.
 fn start_timer_impl(app: &AppHandle, seconds: u32) {
@@ -485,12 +557,8 @@ fn start_timer_impl(app: &AppHandle, seconds: u32) {
         if TIMER_GEN.load(Ordering::SeqCst) != generation {
             return;
         }
-        // "띠띠" — 짧은 알림음 두 번
-        unsafe {
-            Beep(1760, 90);
-            std::thread::sleep(std::time::Duration::from_millis(70));
-            Beep(1760, 90);
-        }
+        // "띠띠" — 볼륨 조절된 짧은 알림음 두 번
+        play_alarm(ALARM_VOLUME.load(Ordering::Relaxed));
         let _ = handle.emit("timer-done", ());
     });
 }
@@ -883,6 +951,12 @@ fn cancel_timer() {
     TIMER_GEN.fetch_add(1, Ordering::SeqCst);
 }
 
+/// 볼륨 미리듣기: 지정 볼륨으로 알림음을 즉시 재생한다.
+#[tauri::command]
+fn test_alarm(volume: u32) {
+    play_alarm(volume.min(100));
+}
+
 #[tauri::command]
 fn save_config(
     app: AppHandle,
@@ -891,6 +965,7 @@ fn save_config(
 ) -> Result<Vec<String>, String> {
     let failed = sync_hotkeys(&app, &config);
     rebuild_timer_bindings(&config);
+    ALARM_VOLUME.store(config.alarm_volume.min(100), Ordering::Relaxed);
     {
         let mut cfg = state.lock().unwrap();
         *cfg = config;
@@ -952,6 +1027,7 @@ fn main() {
             // 타이머용 패시브 키보드 훅 설치 (키를 삼키지 않고 감지만)
             let _ = TIMER_APP.set(handle.clone());
             rebuild_timer_bindings(&cfg);
+            ALARM_VOLUME.store(cfg.alarm_volume.min(100), Ordering::Relaxed);
             unsafe {
                 SetWindowsHookExW(WH_KEYBOARD_LL, timer_hook_proc, 0, 0);
             }
@@ -1019,7 +1095,8 @@ fn main() {
             get_hanja_removal,
             set_hanja_removal,
             start_timer,
-            cancel_timer
+            cancel_timer,
+            test_alarm
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
