@@ -76,7 +76,13 @@
             <button class="hotkey-chip" id="preset-hotkey-btn">지정 안 됨</button>
           </div>
         </div>
-        <div class="vrow" id="timer-row" title="타이머 단축키(또는 아래 [시작] 버튼)를 누른 시점부터 이 시간이 지나면 알림음이 울립니다 · 버프/재사용 대기시간 알림 등에 활용 · 0이면 사용 안 함">
+        <div class="vrow" id="timer-enable-row" title="이 프리셋의 타이머 사용 여부 · 타이머는 '적용 중'인 프리셋에서만 동작합니다(다른 프리셋을 적용하면 그 프리셋의 타이머만 작동)">
+          <div class="lbl"><label>타이머 사용</label><span class="regname">적용 중인 프리셋에서만 동작</span></div>
+          <div class="row-right">
+            <label class="switch small"><input type="checkbox" id="opt-timer-enabled" /><span class="slider-sw"></span></label>
+          </div>
+        </div>
+        <div class="vrow" id="timer-row" title="타이머 단축키(또는 [시작] 버튼)를 누른 시점부터 이 시간이 지나면 알림음이 울립니다 · 버프/재사용 대기시간 알림 등에 활용">
           <div class="lbl"><label>타이머 알림 시간</label><span class="regname">누른 뒤 이 시간 후 알림음</span></div>
           <div class="num-wrap"><input type="number" id="in-timer" min="0" max="86400" /><span class="unit-suffix">초</span></div>
         </div>
@@ -124,6 +130,12 @@
           <div class="row-right">
             <input type="range" id="sl-volume" min="0" max="100" step="1" style="width:120px" />
             <button class="btn tiny" id="vol-test" title="현재 볼륨으로 알림음 재생">🔊 테스트</button>
+          </div>
+        </div>
+        <div class="vrow" title="타이머가 '시작'될 때 짧은 확인음을 낼지 여부 · 스킬키로 타이머를 시작하면 누를 때마다 소리가 나므로 기본은 꺼짐 · 시간이 다 됐을 때의 알림음(띠띠)과는 별개입니다">
+          <label>타이머 시작 알림음</label>
+          <div class="row-right">
+            <label class="switch small"><input type="checkbox" id="opt-timer-start-sound" /><span class="slider-sw"></span></label>
           </div>
         </div>
         <div class="vrow" title="우측 Ctrl의 한자 기능만 OS(커널) 차원에서 제거합니다 — 우측 Ctrl은 순수 Ctrl 키로 정상 동작 · 키 입력을 가로채지 않고, 상주 프로그램/훅 없이 동작해서 게임에 보일 것이 없음 · 켜고 끌 때 재부팅 1회 필요 · 등록에 관리자 권한 필요 · 기존 Scancode Map 설정은 보존됩니다">

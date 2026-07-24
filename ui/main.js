@@ -122,6 +122,7 @@ function renderDetail() {
   $('view-values').classList.toggle('hidden', isSettings);
   $('view-settings').classList.toggle('hidden', !isSettings);
   $('hotkey-row').classList.toggle('hidden', !p);
+  $('timer-enable-row').classList.toggle('hidden', !p);
   $('timer-row').classList.toggle('hidden', !p);
   $('timer-hotkey-row').classList.toggle('hidden', !p);
   $('btn-delete').classList.toggle('hidden', !p);
@@ -137,6 +138,7 @@ function renderDetail() {
     $('opt-persist').checked = config.persistRegistry;
     $('opt-beep').checked = config.beepOnHotkey;
     $('opt-hanja-perm').checked = hanjaPerm;
+    $('opt-timer-start-sound').checked = !!config.timerStartSound;
     const vol = config.alarmVolume ?? 85;
     $('sl-volume').value = vol;
     $('vol-label').textContent = vol;
@@ -156,6 +158,7 @@ function renderDetail() {
     chip.textContent = p.hotkey ? prettyHotkey(p.hotkey) : '지정 안 됨';
     chip.classList.toggle('set', !!p.hotkey);
     // 타이머
+    $('opt-timer-enabled').checked = !!p.timerEnabled;
     $('in-timer').value = p.timerSeconds || 0;
     const tchip = $('timer-hotkey-btn');
     tchip.textContent = p.timerHotkey ? prettyHotkey(p.timerHotkey) : '지정 안 됨';
@@ -205,6 +208,7 @@ function commitDraftToPreset(p) {
   if (name) p.name = name;
   const t = parseInt($('in-timer').value, 10);
   p.timerSeconds = isNaN(t) || t < 0 ? 0 : t;
+  p.timerEnabled = $('opt-timer-enabled').checked;
 }
 
 // ─────────────────────────── 단축키 캡처 ───────────────────────────
@@ -444,7 +448,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       waitMs: draft.wait, delayMs: draft.delay,
       repeatMs: draft.repeat, bounceMs: draft.bounce,
       hotkey: null,
-      timerSeconds: 0, timerHotkey: null,
+      timerEnabled: false, timerSeconds: 0, timerHotkey: null,
     };
     config.presets.push(p);
     saveConfig();
@@ -482,6 +486,19 @@ window.addEventListener('DOMContentLoaded', async () => {
       renderDetail();
       renderList();
     });
+  });
+
+  // 타이머 사용 on/off → 프리셋에 저장 (적용 중이면 즉시 바인딩 반영)
+  $('opt-timer-enabled').addEventListener('change', (e) => {
+    const p = selPreset();
+    if (!p) return;
+    p.timerEnabled = e.target.checked;
+    saveConfig();
+    if (config.activePreset === p.id) {
+      toast(e.target.checked ? '타이머 사용 켜짐 (적용 중)' : '타이머 사용 꺼짐');
+    } else if (e.target.checked) {
+      toast('타이머는 이 프리셋을 [적용]해야 동작해요');
+    }
   });
 
   // 타이머 시간 입력 → 즉시 프리셋에 저장
@@ -571,6 +588,10 @@ window.addEventListener('DOMContentLoaded', async () => {
   $('vol-test').addEventListener('click', () => {
     const v = parseInt($('sl-volume').value, 10) || 0;
     invoke('test_alarm', { volume: v }).catch(() => {});
+  });
+  $('opt-timer-start-sound').addEventListener('change', (e) => {
+    config.timerStartSound = e.target.checked;
+    saveConfig();
   });
 
   // ─────────── 한자키 제거 (Scancode Map) ───────────

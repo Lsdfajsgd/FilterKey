@@ -330,8 +330,9 @@ struct Preset {
     repeat_ms: u32,
     bounce_ms: u32,
     hotkey: Option<String>,
-    timer_seconds: u32,          // 알림음까지 시간(초). 0이면 타이머 사용 안 함
-    timer_hotkey: Option<String>, // 타이머를 시작하는 전역 단축키
+    timer_enabled: bool,          // 이 프리셋의 타이머 사용 여부
+    timer_seconds: u32,           // 알림음까지 시간(초)
+    timer_hotkey: Option<String>, // 타이머를 시작하는 키
 }
 
 impl Default for Preset {
@@ -344,6 +345,7 @@ impl Default for Preset {
             repeat_ms: 0,
             bounce_ms: 0,
             hotkey: None,
+            timer_enabled: false,
             timer_seconds: 0,
             timer_hotkey: None,
         }
@@ -357,6 +359,7 @@ struct AppConfig {
     persist_registry: bool, // SPIF_UPDATEINIFILE 사용 여부 (재부팅 후에도 유지)
     beep_on_hotkey: bool,   // 단축키 동작 시 비프음
     alarm_volume: u32,      // 타이머 알림음 볼륨 (0~100)
+    timer_start_sound: bool, // 타이머 시작 시 확인음 재생 여부
     toggle_hotkey: Option<String>,
     active_preset: Option<String>,
     presets: Vec<Preset>,
@@ -369,6 +372,7 @@ impl Default for AppConfig {
             persist_registry: true,
             beep_on_hotkey: true,
             alarm_volume: 85,
+            timer_start_sound: false,
             toggle_hotkey: Some("ctrl+alt+f9".into()),
             active_preset: None,
             presets: vec![
@@ -540,9 +544,10 @@ fn beep_feedback(app: &AppHandle, freq: u32) {
 // 프리셋별 타이머: 단축키(또는 버튼)를 누른 시점부터 지정 시간이 지나면 알림음.
 // 새 타이머를 시작하면 이전 타이머는 취소된다(세대 번호 비교).
 
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 static TIMER_GEN: AtomicU64 = AtomicU64::new(0);
 static ALARM_VOLUME: AtomicU32 = AtomicU32::new(85);
+static TIMER_START_SOUND: AtomicBool = AtomicBool::new(false);
 
 /// 지정한 초가 지난 뒤 알림음(3단 비프)을 울린다. 0초면 아무것도 안 함.
 fn start_timer_impl(app: &AppHandle, seconds: u32) {
@@ -671,21 +676,24 @@ fn parse_timer_key(s: &str) -> Option<(MainKey, bool, bool, bool)> {
     Some((main, need_ctrl, need_alt, need_shift))
 }
 
+/// 타이머는 "현재 적용된(active) 프리셋"의 것만 활성화된다.
+/// 그래서 다른 프리셋에 걸어둔 타이머는 그 프리셋을 적용하기 전까지 동작하지 않는다.
 fn rebuild_timer_bindings(cfg: &AppConfig) {
     let mut v = Vec::new();
-    for p in &cfg.presets {
-        if p.timer_seconds == 0 {
-            continue;
-        }
-        if let Some(hk) = &p.timer_hotkey {
-            if let Some((main, c, a, s)) = parse_timer_key(hk) {
-                v.push(TimerBinding {
-                    seconds: p.timer_seconds,
-                    main,
-                    need_ctrl: c,
-                    need_alt: a,
-                    need_shift: s,
-                });
+    if let Some(active_id) = &cfg.active_preset {
+        if let Some(p) = cfg.presets.iter().find(|p| &p.id == active_id) {
+            if p.timer_enabled && p.timer_seconds > 0 {
+                if let Some(hk) = &p.timer_hotkey {
+                    if let Some((main, c, a, s)) = parse_timer_key(hk) {
+                        v.push(TimerBinding {
+                            seconds: p.timer_seconds,
+                            main,
+                            need_ctrl: c,
+                            need_alt: a,
+                            need_shift: s,
+                        });
+                    }
+                }
             }
         }
     }
@@ -725,7 +733,11 @@ fn maybe_trigger_timer(vk: u32) {
         }
         if let Some(app) = TIMER_APP.get() {
             start_timer_impl(app, b.seconds);
-            beep_feedback(app, 740);
+            if TIMER_START_SOUND.load(Ordering::Relaxed) {
+                std::thread::spawn(|| unsafe {
+                    Beep(740, 80);
+                });
+            }
         }
         break;
     }
@@ -805,6 +817,7 @@ fn apply_preset_impl(app: &AppHandle, id: &str) -> Result<SysState, String> {
         let state = app.state::<ConfigState>();
         let cfg = state.lock().unwrap();
         persist_config_file(app, &cfg);
+        rebuild_timer_bindings(&cfg); // 적용된 프리셋의 타이머만 활성화
     }
     let sys = get_sys()?;
     emit_state(app);
@@ -908,6 +921,7 @@ fn apply_values(
     let persist = {
         let mut cfg = state.lock().unwrap();
         cfg.active_preset = None; // 수동 적용 → 커스텀 값
+        rebuild_timer_bindings(&cfg); // 활성 프리셋 없음 → 타이머 해제
         cfg.persist_registry
     };
     set_sys(on, wait_ms, delay_ms, repeat_ms, bounce_ms, persist)?;
@@ -966,6 +980,7 @@ fn save_config(
     let failed = sync_hotkeys(&app, &config);
     rebuild_timer_bindings(&config);
     ALARM_VOLUME.store(config.alarm_volume.min(100), Ordering::Relaxed);
+    TIMER_START_SOUND.store(config.timer_start_sound, Ordering::Relaxed);
     {
         let mut cfg = state.lock().unwrap();
         *cfg = config;
@@ -1028,6 +1043,7 @@ fn main() {
             let _ = TIMER_APP.set(handle.clone());
             rebuild_timer_bindings(&cfg);
             ALARM_VOLUME.store(cfg.alarm_volume.min(100), Ordering::Relaxed);
+            TIMER_START_SOUND.store(cfg.timer_start_sound, Ordering::Relaxed);
             unsafe {
                 SetWindowsHookExW(WH_KEYBOARD_LL, timer_hook_proc, 0, 0);
             }
