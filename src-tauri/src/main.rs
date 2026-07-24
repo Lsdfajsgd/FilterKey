@@ -225,7 +225,7 @@ fn restart_as_admin(app: AppHandle) -> Result<(), String> {
 // ─────────────────────────────── 데이터 모델 ───────────────────────────────
 
 #[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 struct Preset {
     id: String,
     name: String,
@@ -234,6 +234,24 @@ struct Preset {
     repeat_ms: u32,
     bounce_ms: u32,
     hotkey: Option<String>,
+    timer_seconds: u32,          // 알림음까지 시간(초). 0이면 타이머 사용 안 함
+    timer_hotkey: Option<String>, // 타이머를 시작하는 전역 단축키
+}
+
+impl Default for Preset {
+    fn default() -> Self {
+        Preset {
+            id: String::new(),
+            name: String::new(),
+            wait_ms: 0,
+            delay_ms: 0,
+            repeat_ms: 0,
+            bounce_ms: 0,
+            hotkey: None,
+            timer_seconds: 0,
+            timer_hotkey: None,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -264,6 +282,7 @@ impl Default for AppConfig {
                     repeat_ms: 20,
                     bounce_ms: 0,
                     hotkey: Some("ctrl+alt+f10".into()),
+                    ..Default::default()
                 },
                 Preset {
                     id: "boss".into(),
@@ -273,6 +292,7 @@ impl Default for AppConfig {
                     repeat_ms: 10,
                     bounce_ms: 0,
                     hotkey: Some("ctrl+alt+f11".into()),
+                    ..Default::default()
                 },
                 Preset {
                     id: "windefault".into(),
@@ -282,6 +302,7 @@ impl Default for AppConfig {
                     repeat_ms: 500,
                     bounce_ms: 0,
                     hotkey: None,
+                    ..Default::default()
                 },
             ],
         }
@@ -417,6 +438,35 @@ fn beep_feedback(app: &AppHandle, freq: u32) {
     }
 }
 
+// ─────────────────────────────── 타이머 알림 ───────────────────────────────
+// 프리셋별 타이머: 단축키(또는 버튼)를 누른 시점부터 지정 시간이 지나면 알림음.
+// 새 타이머를 시작하면 이전 타이머는 취소된다(세대 번호 비교).
+
+use std::sync::atomic::{AtomicU64, Ordering};
+static TIMER_GEN: AtomicU64 = AtomicU64::new(0);
+
+/// 지정한 초가 지난 뒤 알림음(3단 비프)을 울린다. 0초면 아무것도 안 함.
+fn start_timer_impl(app: &AppHandle, seconds: u32) {
+    if seconds == 0 {
+        return;
+    }
+    let generation = TIMER_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(seconds as u64));
+        // 그 사이 다른 타이머가 시작됐으면 이 타이머는 무효
+        if TIMER_GEN.load(Ordering::SeqCst) != generation {
+            return;
+        }
+        unsafe {
+            Beep(880, 180);
+            Beep(1175, 180);
+            Beep(1568, 320);
+        }
+        let _ = handle.emit("timer-done", ());
+    });
+}
+
 /// 필터키 ON/OFF 토글. 켤 때 활성 프리셋이 있으면 그 값으로 켠다.
 fn toggle_impl(app: &AppHandle) -> Result<SysState, String> {
     let sys = get_sys()?;
@@ -484,6 +534,9 @@ fn sync_hotkeys(app: &AppHandle, cfg: &AppConfig) -> Vec<String> {
     }
     for p in &cfg.presets {
         if let Some(hk) = &p.hotkey {
+            candidates.push(hk.as_str());
+        }
+        if let Some(hk) = &p.timer_hotkey {
             candidates.push(hk.as_str());
         }
     }
@@ -580,6 +633,31 @@ fn apply_preset(app: AppHandle, id: String) -> Result<SysState, String> {
     apply_preset_impl(&app, &id)
 }
 
+/// 프리셋의 타이머 시작. 반환값은 설정된 초(0이면 미설정).
+#[tauri::command]
+fn start_timer(app: AppHandle, id: String) -> Result<u32, String> {
+    let seconds = {
+        let state = app.state::<ConfigState>();
+        let cfg = state.lock().unwrap();
+        cfg.presets
+            .iter()
+            .find(|p| p.id == id)
+            .map(|p| p.timer_seconds)
+            .ok_or_else(|| "프리셋을 찾을 수 없습니다".to_string())?
+    };
+    if seconds == 0 {
+        return Err("타이머 시간이 설정되지 않았습니다".into());
+    }
+    start_timer_impl(&app, seconds);
+    Ok(seconds)
+}
+
+/// 실행 중인 타이머를 취소한다.
+#[tauri::command]
+fn cancel_timer() {
+    TIMER_GEN.fetch_add(1, Ordering::SeqCst);
+}
+
 #[tauri::command]
 fn save_config(
     app: AppHandle,
@@ -606,7 +684,7 @@ fn main() {
                     if event.state != ShortcutState::Pressed {
                         return;
                     }
-                    let (is_toggle, preset_id) = {
+                    let (is_toggle, preset_id, timer_seconds) = {
                         let state = app.state::<ConfigState>();
                         let cfg = state.lock().unwrap();
                         let is_toggle = cfg
@@ -624,7 +702,17 @@ fn main() {
                                     .unwrap_or(false)
                             })
                             .map(|p| p.id.clone());
-                        (is_toggle, preset_id)
+                        let timer_seconds = cfg
+                            .presets
+                            .iter()
+                            .find(|p| {
+                                p.timer_hotkey
+                                    .as_deref()
+                                    .map(|s| matches_shortcut(shortcut, s))
+                                    .unwrap_or(false)
+                            })
+                            .map(|p| p.timer_seconds);
+                        (is_toggle, preset_id, timer_seconds)
                     };
                     if is_toggle {
                         if let Ok(sys) = toggle_impl(app) {
@@ -634,6 +722,11 @@ fn main() {
                     } else if let Some(id) = preset_id {
                         if apply_preset_impl(app, &id).is_ok() {
                             beep_feedback(app, 990);
+                        }
+                    } else if let Some(sec) = timer_seconds {
+                        if sec > 0 {
+                            start_timer_impl(app, sec);
+                            beep_feedback(app, 740); // 타이머 시작 확인음
                         }
                     }
                 })
@@ -706,7 +799,9 @@ fn main() {
             is_admin,
             restart_as_admin,
             get_hanja_removal,
-            set_hanja_removal
+            set_hanja_removal,
+            start_timer,
+            cancel_timer
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

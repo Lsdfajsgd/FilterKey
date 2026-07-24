@@ -120,6 +120,8 @@ function renderDetail() {
   $('view-values').classList.toggle('hidden', isSettings);
   $('view-settings').classList.toggle('hidden', !isSettings);
   $('hotkey-row').classList.toggle('hidden', !p);
+  $('timer-row').classList.toggle('hidden', !p);
+  $('timer-hotkey-row').classList.toggle('hidden', !p);
   $('btn-delete').classList.toggle('hidden', !p);
   $('btn-save').classList.toggle('hidden', !p);
   $('btn-apply').classList.toggle('hidden', isSettings);
@@ -148,6 +150,11 @@ function renderDetail() {
     const chip = $('preset-hotkey-btn');
     chip.textContent = p.hotkey ? prettyHotkey(p.hotkey) : '지정 안 됨';
     chip.classList.toggle('set', !!p.hotkey);
+    // 타이머
+    $('in-timer').value = p.timerSeconds || 0;
+    const tchip = $('timer-hotkey-btn');
+    tchip.textContent = p.timerHotkey ? prettyHotkey(p.timerHotkey) : '지정 안 됨';
+    tchip.classList.toggle('set', !!p.timerHotkey);
     fillEditor();
   }
 }
@@ -183,7 +190,7 @@ function select(id) {
   renderDetail();
 }
 
-// 프리셋에 draft + 이름 저장
+// 프리셋에 draft + 이름 + 타이머 저장
 function commitDraftToPreset(p) {
   p.waitMs = draft.wait;
   p.delayMs = draft.delay;
@@ -191,6 +198,8 @@ function commitDraftToPreset(p) {
   p.bounceMs = draft.bounce;
   const name = $('detail-title').value.trim();
   if (name) p.name = name;
+  const t = parseInt($('in-timer').value, 10);
+  p.timerSeconds = isNaN(t) || t < 0 ? 0 : t;
 }
 
 // ─────────────────────────── 단축키 캡처 ───────────────────────────
@@ -299,6 +308,10 @@ window.addEventListener('DOMContentLoaded', async () => {
     renderStatus();
   });
 
+  listen('timer-done', () => {
+    toast('⏰ 타이머 시간이 되었습니다!', 4000);
+  });
+
   // 마스터 토글
   $('power-toggle').addEventListener('change', async () => {
     try {
@@ -379,6 +392,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       waitMs: draft.wait, delayMs: draft.delay,
       repeatMs: draft.repeat, bounceMs: draft.bounce,
       hotkey: null,
+      timerSeconds: 0, timerHotkey: null,
     };
     config.presets.push(p);
     saveConfig();
@@ -416,6 +430,46 @@ window.addEventListener('DOMContentLoaded', async () => {
       renderDetail();
       renderList();
     });
+  });
+
+  // 타이머 시간 입력 → 즉시 프리셋에 저장
+  $('in-timer').addEventListener('change', () => {
+    const p = selPreset();
+    if (!p) return;
+    const t = parseInt($('in-timer').value, 10);
+    p.timerSeconds = isNaN(t) || t < 0 ? 0 : t;
+    saveConfig();
+  });
+
+  // 타이머 시작 단축키
+  $('timer-hotkey-btn').addEventListener('click', () => {
+    const p = selPreset();
+    if (!p) return;
+    captureHotkey((combo) => {
+      p.timerHotkey = combo;
+      saveConfig();
+      renderDetail();
+    });
+  });
+
+  // 타이머 지금 시작 (버튼)
+  $('timer-start-btn').addEventListener('click', async () => {
+    const p = selPreset();
+    if (!p) return;
+    const t = parseInt($('in-timer').value, 10);
+    if (isNaN(t) || t <= 0) {
+      toast('타이머 시간을 1초 이상으로 설정하세요');
+      return;
+    }
+    // 최신 값 저장 후 시작
+    p.timerSeconds = t;
+    await saveConfig();
+    try {
+      await invoke('start_timer', { id: p.id });
+      toast(`⏱ ${t}초 뒤 알림음이 울립니다`);
+    } catch (e) {
+      toast('타이머 시작 실패: ' + e);
+    }
   });
 
   // 설정: 토글 단축키

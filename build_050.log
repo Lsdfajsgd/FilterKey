@@ -1,0 +1,20 @@
+﻿node.exe :         Info Looking up installed tauri packages to check mismatched versions...
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (        Info Lo...hed versions...:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+   Compiling filterkey v0.5.0 (C:\Project\FilterKey\src-tauri)
+    Finished `release` profile [optimized] target(s) in 24.81s
+       Built application at: C:\Project\FilterKey\src-tauri\target\release\filterkey.exe
+        Info Patching C:\Project\FilterKey\src-tauri\target\release\filterkey.exe with bundle type information: nsis
+        Info Target: x64
+     Running makensis to produce C:\Project\FilterKey\src-tauri\target\release\bundle\nsis\MapleHelper_0.5.0_x64-setup.
+exe
+    Finished 1 bundle at:
+        C:\Project\FilterKey\src-tauri\target\release\bundle\nsis\MapleHelper_0.5.0_x64-setup.exe
+
+A public key has been found, but no private key. Make sure to set `TAURI_SIGNING_PRIVATE_KEY` environment variable.
+       Error A public key has been found, but no private key. Make sure to set `TAURI_SIGNING_PRIVATE_KEY` environment 
+variable.
