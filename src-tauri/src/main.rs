@@ -48,6 +48,33 @@ extern "system" {
     fn Beep(freq: u32, duration: u32) -> i32;
 }
 
+// ───────── 타이머 트리거용 패시브 키보드 훅 (키를 삼키지 않고 감지만) ─────────
+// 스킬키를 누르면 그 입력은 게임으로 그대로 전달되고, 동시에 해당 프리셋의 타이머만 시작.
+
+const WH_KEYBOARD_LL: i32 = 13;
+
+#[repr(C)]
+#[allow(non_snake_case)]
+struct KBDLLHOOKSTRUCT {
+    vkCode: u32,
+    scanCode: u32,
+    flags: u32,
+    time: u32,
+    dwExtraInfo: usize,
+}
+
+#[link(name = "user32")]
+extern "system" {
+    fn SetWindowsHookExW(
+        id_hook: i32,
+        lpfn: unsafe extern "system" fn(i32, usize, isize) -> isize,
+        hmod: isize,
+        thread_id: u32,
+    ) -> isize;
+    fn CallNextHookEx(hhk: isize, code: i32, wparam: usize, lparam: isize) -> isize;
+    fn GetAsyncKeyState(vk: i32) -> i16;
+}
+
 // ──────────── 한자키 제거 (Scancode Map — OS 커널 차원, 재부팅 필요) ────────────
 // 우측 Ctrl(E0 1D)을 왼쪽 Ctrl(1D)로 리매핑: 드라이버가 한자로 번역하기 전 단계라
 // Ctrl 기능은 그대로 살아있고 한자 기능만 사라진다. 훅/상주 프로세스 불필요.
@@ -468,6 +495,205 @@ fn start_timer_impl(app: &AppHandle, seconds: u32) {
     });
 }
 
+// ── 타이머 트리거 바인딩 (패시브 키보드 훅이 이 목록을 보고 타이머를 시작) ──
+
+#[derive(Clone)]
+enum MainKey {
+    Exact(u32), // 특정 가상키 코드
+    Shift,
+    Ctrl,
+    Alt,
+    Meta,
+}
+
+#[derive(Clone)]
+struct TimerBinding {
+    seconds: u32,
+    main: MainKey,
+    need_ctrl: bool,
+    need_alt: bool,
+    need_shift: bool,
+}
+
+use std::sync::OnceLock;
+static TIMER_APP: OnceLock<AppHandle> = OnceLock::new();
+static TIMER_BINDINGS: Mutex<Vec<TimerBinding>> = Mutex::new(Vec::new());
+static TIMER_DOWN: Mutex<Vec<u32>> = Mutex::new(Vec::new()); // 현재 눌린 키(오토리핏 방지용)
+
+/// 키 토큰("a","f1","space","capslock","comma"...) → 윈도우 가상키 코드
+fn token_to_vk(t: &str) -> Option<u32> {
+    // 알파벳
+    if t.len() == 1 {
+        let c = t.chars().next().unwrap();
+        if c.is_ascii_alphabetic() {
+            return Some(c.to_ascii_uppercase() as u32); // 'A'=0x41
+        }
+        if c.is_ascii_digit() {
+            return Some(c as u32); // '0'=0x30
+        }
+    }
+    // F1~F24
+    if let Some(n) = t.strip_prefix('f') {
+        if let Ok(num) = n.parse::<u32>() {
+            if (1..=24).contains(&num) {
+                return Some(0x70 + (num - 1)); // VK_F1=0x70
+            }
+        }
+    }
+    let vk = match t {
+        "space" => 0x20,
+        "enter" => 0x0D,
+        "tab" => 0x09,
+        "capslock" => 0x14,
+        "backspace" => 0x08,
+        "home" => 0x24,
+        "end" => 0x23,
+        "pageup" => 0x21,
+        "pagedown" => 0x22,
+        "insert" => 0x2D,
+        "delete" => 0x2E,
+        "up" => 0x26,
+        "down" => 0x28,
+        "left" => 0x25,
+        "right" => 0x27,
+        "minus" => 0xBD,
+        "equal" => 0xBB,
+        "comma" => 0xBC,
+        "period" => 0xBE,
+        "slash" => 0xBF,
+        "semicolon" => 0xBA,
+        "quote" => 0xDE,
+        "backquote" => 0xC0,
+        "bracketleft" => 0xDB,
+        "bracketright" => 0xDD,
+        "backslash" => 0xDC,
+        _ => return None,
+    };
+    Some(vk)
+}
+
+/// "shift", "ctrl+a", "ctrl+shift+f1" → (메인키, ctrl필요, alt필요, shift필요)
+fn parse_timer_key(s: &str) -> Option<(MainKey, bool, bool, bool)> {
+    let tokens: Vec<String> = s
+        .split('+')
+        .map(|t| t.trim().to_lowercase())
+        .filter(|t| !t.is_empty())
+        .collect();
+    if tokens.is_empty() {
+        return None;
+    }
+    let (mods, main_tok) = tokens.split_at(tokens.len() - 1);
+    let (mut need_ctrl, mut need_alt, mut need_shift) = (false, false, false);
+    for m in mods {
+        match m.as_str() {
+            "ctrl" => need_ctrl = true,
+            "alt" => need_alt = true,
+            "shift" => need_shift = true,
+            "super" => {}
+            _ => return None,
+        }
+    }
+    let main = match main_tok[0].as_str() {
+        "shift" => MainKey::Shift,
+        "ctrl" => MainKey::Ctrl,
+        "alt" => MainKey::Alt,
+        "super" => MainKey::Meta,
+        other => MainKey::Exact(token_to_vk(other)?),
+    };
+    Some((main, need_ctrl, need_alt, need_shift))
+}
+
+fn rebuild_timer_bindings(cfg: &AppConfig) {
+    let mut v = Vec::new();
+    for p in &cfg.presets {
+        if p.timer_seconds == 0 {
+            continue;
+        }
+        if let Some(hk) = &p.timer_hotkey {
+            if let Some((main, c, a, s)) = parse_timer_key(hk) {
+                v.push(TimerBinding {
+                    seconds: p.timer_seconds,
+                    main,
+                    need_ctrl: c,
+                    need_alt: a,
+                    need_shift: s,
+                });
+            }
+        }
+    }
+    *TIMER_BINDINGS.lock().unwrap() = v;
+}
+
+fn key_down(vk: i32) -> bool {
+    unsafe { (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 }
+}
+
+fn main_matches(m: &MainKey, vk: u32) -> bool {
+    match m {
+        MainKey::Exact(x) => *x == vk,
+        MainKey::Shift => vk == 0xA0 || vk == 0xA1 || vk == 0x10,
+        MainKey::Ctrl => vk == 0xA2 || vk == 0xA3 || vk == 0x11,
+        MainKey::Alt => vk == 0xA4 || vk == 0xA5 || vk == 0x12,
+        MainKey::Meta => vk == 0x5B || vk == 0x5C,
+    }
+}
+
+/// 눌린 키가 어떤 타이머 바인딩과 맞으면 그 타이머를 시작한다.
+fn maybe_trigger_timer(vk: u32) {
+    let bindings = TIMER_BINDINGS.lock().unwrap().clone();
+    for b in &bindings {
+        if !main_matches(&b.main, vk) {
+            continue;
+        }
+        // 필요한 수식키가 눌려 있는지 (VK_CONTROL=0x11, VK_MENU=0x12, VK_SHIFT=0x10)
+        if b.need_ctrl && !key_down(0x11) {
+            continue;
+        }
+        if b.need_alt && !key_down(0x12) {
+            continue;
+        }
+        if b.need_shift && !key_down(0x10) {
+            continue;
+        }
+        if let Some(app) = TIMER_APP.get() {
+            start_timer_impl(app, b.seconds);
+            beep_feedback(app, 740);
+        }
+        break;
+    }
+}
+
+/// 패시브 훅: 키를 절대 삼키지 않고(항상 CallNextHookEx), 눌림만 감지한다.
+unsafe extern "system" fn timer_hook_proc(code: i32, wparam: usize, lparam: isize) -> isize {
+    if code >= 0 {
+        let msg = wparam as u32;
+        let kb = &*(lparam as *const KBDLLHOOKSTRUCT);
+        let vk = kb.vkCode;
+        const WM_KEYDOWN: u32 = 0x0100;
+        const WM_SYSKEYDOWN: u32 = 0x0104;
+        const WM_KEYUP: u32 = 0x0101;
+        const WM_SYSKEYUP: u32 = 0x0105;
+        if msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN {
+            // 오토리핏 무시: 이미 눌린 상태면 무시하고, 처음 눌릴 때만 트리거
+            let fresh = {
+                let mut down = TIMER_DOWN.lock().unwrap();
+                if down.contains(&vk) {
+                    false
+                } else {
+                    down.push(vk);
+                    true
+                }
+            };
+            if fresh {
+                maybe_trigger_timer(vk);
+            }
+        } else if msg == WM_KEYUP || msg == WM_SYSKEYUP {
+            TIMER_DOWN.lock().unwrap().retain(|&x| x != vk);
+        }
+    }
+    CallNextHookEx(0, code, wparam, lparam)
+}
+
 /// 필터키 ON/OFF 토글. 켤 때 활성 프리셋이 있으면 그 값으로 켠다.
 fn toggle_impl(app: &AppHandle) -> Result<SysState, String> {
     let sys = get_sys()?;
@@ -537,9 +763,7 @@ fn sync_hotkeys(app: &AppHandle, cfg: &AppConfig) -> Vec<String> {
         if let Some(hk) = &p.hotkey {
             candidates.push(hk.as_str());
         }
-        if let Some(hk) = &p.timer_hotkey {
-            candidates.push(hk.as_str());
-        }
+        // 타이머 단축키는 전역 단축키(키를 삼킴)가 아니라 패시브 훅으로 처리하므로 여기서 등록하지 않는다.
     }
 
     for s in candidates {
@@ -666,6 +890,7 @@ fn save_config(
     config: AppConfig,
 ) -> Result<Vec<String>, String> {
     let failed = sync_hotkeys(&app, &config);
+    rebuild_timer_bindings(&config);
     {
         let mut cfg = state.lock().unwrap();
         *cfg = config;
@@ -685,7 +910,7 @@ fn main() {
                     if event.state != ShortcutState::Pressed {
                         return;
                     }
-                    let (is_toggle, preset_id, timer_seconds) = {
+                    let (is_toggle, preset_id) = {
                         let state = app.state::<ConfigState>();
                         let cfg = state.lock().unwrap();
                         let is_toggle = cfg
@@ -703,17 +928,7 @@ fn main() {
                                     .unwrap_or(false)
                             })
                             .map(|p| p.id.clone());
-                        let timer_seconds = cfg
-                            .presets
-                            .iter()
-                            .find(|p| {
-                                p.timer_hotkey
-                                    .as_deref()
-                                    .map(|s| matches_shortcut(shortcut, s))
-                                    .unwrap_or(false)
-                            })
-                            .map(|p| p.timer_seconds);
-                        (is_toggle, preset_id, timer_seconds)
+                        (is_toggle, preset_id)
                     };
                     if is_toggle {
                         if let Ok(sys) = toggle_impl(app) {
@@ -724,11 +939,6 @@ fn main() {
                         if apply_preset_impl(app, &id).is_ok() {
                             beep_feedback(app, 990);
                         }
-                    } else if let Some(sec) = timer_seconds {
-                        if sec > 0 {
-                            start_timer_impl(app, sec);
-                            beep_feedback(app, 740); // 타이머 시작 확인음
-                        }
                     }
                 })
                 .build(),
@@ -738,6 +948,13 @@ fn main() {
             let cfg = load_config(&handle);
             app.manage(Mutex::new(cfg.clone()));
             sync_hotkeys(&handle, &cfg);
+
+            // 타이머용 패시브 키보드 훅 설치 (키를 삼키지 않고 감지만)
+            let _ = TIMER_APP.set(handle.clone());
+            rebuild_timer_bindings(&cfg);
+            unsafe {
+                SetWindowsHookExW(WH_KEYBOARD_LL, timer_hook_proc, 0, 0);
+            }
 
             // ── 트레이 아이콘 ──
             let show_i = MenuItem::with_id(app, "show", "열기", true, None::<&str>)?;

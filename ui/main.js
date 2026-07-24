@@ -228,11 +228,28 @@ const KEY_DISPLAY = {
 
 let captureCallback = null;
 let captureAllowSingle = false;
+let capturePendingMod = null; // allowSingle 모드에서 단독 수식키 후보 (keyup 때 확정)
+
+const MOD_CODE = {
+  ShiftLeft: 'shift', ShiftRight: 'shift',
+  ControlLeft: 'ctrl', ControlRight: 'ctrl',
+  AltLeft: 'alt', AltRight: 'alt',
+  MetaLeft: 'super', MetaRight: 'super',
+};
 
 function captureHotkey(cb, allowSingle = false) {
   captureCallback = cb;
   captureAllowSingle = allowSingle;
+  capturePendingMod = null;
   $('hotkey-overlay').classList.remove('hidden');
+}
+
+function finishCapture(combo) {
+  const cb = captureCallback;
+  captureCallback = null;
+  capturePendingMod = null;
+  $('hotkey-overlay').classList.add('hidden');
+  cb(combo);
 }
 
 window.addEventListener(
@@ -244,14 +261,12 @@ window.addEventListener(
 
     if (e.key === 'Escape') {
       captureCallback = null;
+      capturePendingMod = null;
       $('hotkey-overlay').classList.add('hidden');
       return;
     }
     if (e.key === 'Backspace') {
-      const cb = captureCallback;
-      captureCallback = null;
-      $('hotkey-overlay').classList.add('hidden');
-      cb(null);
+      finishCapture(null);
       toast('단축키를 해제했어요');
       return;
     }
@@ -262,13 +277,17 @@ window.addEventListener(
     else if (/^F(\d{1,2})$/.test(e.code)) key = e.code.toLowerCase();
     else if (CODE_MAP[e.code]) key = CODE_MAP[e.code];
 
-    // 수식키 단독(Shift/Ctrl/Alt만 누름)
+    // 일반 키가 아직 안 잡힘 → 수식키만 눌린 상태
     if (!key) {
-      if (captureAllowSingle && /^(Shift|Control|Alt|Meta)(Left|Right)$/.test(e.code)) {
-        toast('단독 Shift/Ctrl/Alt는 전역 단축키로 등록할 수 없어요 — 단일 키(예: CapsLock, ` 등)나 조합을 사용하세요', 4500);
+      // allowSingle이면 단독 수식키(Shift 등)를 후보로 기억, keyup 때 확정
+      if (captureAllowSingle && MOD_CODE[e.code]) {
+        capturePendingMod = MOD_CODE[e.code];
       }
       return;
     }
+
+    // 일반 키가 잡혔으니 단독 수식키 후보는 취소
+    capturePendingMod = null;
 
     const mods = [];
     if (e.ctrlKey) mods.push('ctrl');
@@ -282,11 +301,19 @@ window.addEventListener(
       return;
     }
 
-    const combo = [...mods, key].join('+');
-    const cb = captureCallback;
-    captureCallback = null;
-    $('hotkey-overlay').classList.add('hidden');
-    cb(combo);
+    finishCapture([...mods, key].join('+'));
+  },
+  true
+);
+
+// 단독 수식키(Shift/Ctrl/Alt) 확정: 눌렀다 뗄 때, 그 사이 다른 키가 없었으면 그 수식키로 등록
+window.addEventListener(
+  'keyup',
+  (e) => {
+    if (!captureCallback || !captureAllowSingle || !capturePendingMod) return;
+    if (MOD_CODE[e.code] === capturePendingMod) {
+      finishCapture(capturePendingMod);
+    }
   },
   true
 );
