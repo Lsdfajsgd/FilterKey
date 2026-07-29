@@ -628,6 +628,9 @@ static LEADER_HELD: AtomicBool = AtomicBool::new(false);
 static LEADER_BINDINGS: Mutex<Vec<(MainKey, String)>> = Mutex::new(Vec::new());
 /// 가로챈 keydown의 vk 목록 — 대응하는 keyup도 같이 삼켜 키 눌림이 남지 않게 한다
 static SWALLOWED: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+/// 단축키 녹화 중에는 훅이 아무것도 가로채지 않는다.
+/// (가로채면 리더 조합을 UI에서 입력할 수 없다)
+static CAPTURE_MODE: AtomicBool = AtomicBool::new(false);
 
 impl MainKey {
     /// Shift/Ctrl/Alt/Win 계열인지 — 이들은 게임 조작에 필수라 리더로 써도 가로채지 않는다
@@ -852,6 +855,10 @@ fn handle_leader_combo(vk: u32) -> bool {
 /// - 평소에는 아무것도 가로채지 않고 감지만 한다(타이머 트리거).
 /// - 리더 키를 누르고 있는 동안에만 뒤따르는 키를 가로채 프리셋을 전환한다.
 unsafe extern "system" fn timer_hook_proc(code: i32, wparam: usize, lparam: isize) -> isize {
+    // 단축키 녹화 중에는 전부 그대로 통과 (UI가 키를 받아야 조합을 기록할 수 있다)
+    if CAPTURE_MODE.load(Ordering::Relaxed) {
+        return CallNextHookEx(0, code, wparam, lparam);
+    }
     if code >= 0 {
         let msg = wparam as u32;
         let kb = &*(lparam as *const KBDLLHOOKSTRUCT);
@@ -1196,6 +1203,19 @@ fn test_alarm(volume: u32) {
     play_alarm(volume.min(100));
 }
 
+/// 단축키 녹화 모드 — 켜져 있는 동안 훅은 어떤 키도 가로채지 않는다.
+/// (리더 키를 누른 채 조합을 입력하려면 UI가 그 키들을 받아야 한다)
+#[tauri::command]
+fn set_capture_mode(on: bool) {
+    CAPTURE_MODE.store(on, Ordering::Relaxed);
+    if !on {
+        // 녹화 중 눌렸던 상태가 남지 않도록 정리
+        LEADER_HELD.store(false, Ordering::Relaxed);
+        TIMER_DOWN.lock().unwrap().clear();
+        SWALLOWED.lock().unwrap().clear();
+    }
+}
+
 #[tauri::command]
 fn save_config(
     app: AppHandle,
@@ -1340,7 +1360,8 @@ fn main() {
             set_hanja_removal,
             start_timer,
             cancel_timer,
-            test_alarm
+            test_alarm,
+            set_capture_mode
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

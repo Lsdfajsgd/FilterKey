@@ -1,6 +1,6 @@
 [package]
 name = "filterkey"
-version = "0.7.0"
+version = "0.7.1"
 description = "메이플 필터키 매니저 — 재부팅 없이 필터키 값을 즉시 적용"
 edition = "2021"
 

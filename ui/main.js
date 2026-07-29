@@ -309,7 +309,20 @@ function captureHotkey(cb, allowSingle = false, allowLeader = false) {
   captureAllowLeader = allowLeader;
   capturePendingMod = null;
   captureLeaderHeld = false;
+  // 녹화 중에는 훅이 키를 가로채지 않게 한다 (안 그러면 리더 조합을 입력할 수 없다)
+  invoke('set_capture_mode', { on: true }).catch(() => {});
+  const hint = $('capture-hint');
+  if (hint) {
+    hint.textContent =
+      allowLeader && config && config.comboLeader
+        ? `${prettyHotkey(config.comboLeader)} 를 누른 채 원하는 키를 누르면 조합 단축키가 됩니다`
+        : '';
+  }
   $('hotkey-overlay').classList.remove('hidden');
+}
+
+function endCaptureMode() {
+  invoke('set_capture_mode', { on: false }).catch(() => {});
 }
 
 function finishCapture(combo) {
@@ -317,6 +330,7 @@ function finishCapture(combo) {
   captureCallback = null;
   capturePendingMod = null;
   captureLeaderHeld = false;
+  endCaptureMode();
   $('hotkey-overlay').classList.add('hidden');
   cb(combo);
 }
@@ -331,6 +345,8 @@ window.addEventListener(
     if (e.key === 'Escape') {
       captureCallback = null;
       capturePendingMod = null;
+      captureLeaderHeld = false;
+      endCaptureMode();
       $('hotkey-overlay').classList.add('hidden');
       return;
     }
