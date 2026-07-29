@@ -142,6 +142,46 @@ extern "system" {
     ) -> isize;
     fn CallNextHookEx(hhk: isize, code: i32, wparam: usize, lparam: isize) -> isize;
     fn GetAsyncKeyState(vk: i32) -> i16;
+    fn GetMessageW(msg: *mut MSG, hwnd: isize, min: u32, max: u32) -> i32;
+    fn TranslateMessage(msg: *const MSG) -> i32;
+    fn DispatchMessageW(msg: *const MSG) -> isize;
+}
+
+#[repr(C)]
+#[allow(non_snake_case)]
+struct MSG {
+    hwnd: isize,
+    message: u32,
+    wParam: usize,
+    lParam: isize,
+    time: u32,
+    pt_x: i32,
+    pt_y: i32,
+}
+
+/// 저수준 키보드 훅은 **설치한 스레드가 메시지 루프를 돌려야** 콜백이 배달된다.
+/// 앱(Tauri) 이벤트 루프에 얹으면 배달이 누락될 수 있어, 전용 스레드에서 훅을 돌린다.
+fn install_hook_thread() {
+    std::thread::spawn(|| unsafe {
+        let h = SetWindowsHookExW(WH_KEYBOARD_LL, timer_hook_proc, 0, 0);
+        if h == 0 {
+            return;
+        }
+        let mut msg = MSG {
+            hwnd: 0,
+            message: 0,
+            wParam: 0,
+            lParam: 0,
+            time: 0,
+            pt_x: 0,
+            pt_y: 0,
+        };
+        // 이 루프가 살아 있는 동안 훅 콜백이 이 스레드로 배달된다
+        while GetMessageW(&mut msg, 0, 0, 0) > 0 {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    });
 }
 
 // ──────────── 한자키 제거 (Scancode Map — OS 커널 차원, 재부팅 필요) ────────────
@@ -640,12 +680,6 @@ static SWALLOWED: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 /// (가로채면 리더 조합을 UI에서 입력할 수 없다)
 static CAPTURE_MODE: AtomicBool = AtomicBool::new(false);
 
-impl MainKey {
-    /// Shift/Ctrl/Alt/Win 계열인지 — 이들은 게임 조작에 필수라 리더로 써도 가로채지 않는다
-    fn is_modifier(&self) -> bool {
-        !matches!(self, MainKey::Exact(_))
-    }
-}
 
 /// 키 토큰("a","f1","space","capslock","comma"...) → 윈도우 가상키 코드
 fn token_to_vk(t: &str) -> Option<u32> {
@@ -796,12 +830,6 @@ fn key_down(vk: i32) -> bool {
     unsafe { (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 }
 }
 
-/// Ctrl/Alt/Shift/Win 중 하나라도 눌려 있는지.
-/// 이 상태의 입력은 Alt+Tab 같은 OS/게임 기본 조합이므로 리더로 가로채면 안 된다.
-fn any_modifier_down() -> bool {
-    key_down(0x11) || key_down(0x12) || key_down(0x10) || key_down(0x5B) || key_down(0x5C)
-}
-
 /// 그 자체가 수식키인 가상키인지 (가로채면 조합이 깨지므로 항상 통과시킨다)
 fn is_modifier_vk(vk: u32) -> bool {
     matches!(
@@ -906,18 +934,10 @@ unsafe extern "system" fn timer_hook_proc(code: i32, wparam: usize, lparam: isiz
 
             if let Some(lk) = &leader {
                 if main_matches(lk, vk) {
-                    // Alt+Tab / Ctrl+Tab 처럼 수식키와 함께 눌린 경우는 OS·게임의 기본 조합이므로
-                    // 리더로 취급하지 않고 그대로 통과시킨다.
-                    if any_modifier_down() {
-                        return CallNextHookEx(0, code, wparam, lparam);
-                    }
+                    // 리더 키를 "누르는 행위 자체"는 어떤 것도 가로채지 않는다.
+                    // (가로채면 그 키의 원래 기능 — Alt+Tab, 게임 내 기능 등 — 을 빼앗게 된다)
+                    // 조합으로 뒤따라 눌린 키만 가로챈다.
                     LEADER_HELD.store(true, Ordering::Relaxed);
-                    // 리더가 Shift/Ctrl/Alt면 게임 조작에 필요하므로 그대로 통과시키고,
-                    // 그 외 키(CapsLock, ` 등)는 가로채 원래 기능이 발동하지 않게 한다.
-                    if !lk.is_modifier() {
-                        SWALLOWED.lock().unwrap().push(vk);
-                        return 1;
-                    }
                     return CallNextHookEx(0, code, wparam, lparam);
                 }
             }
@@ -1332,9 +1352,7 @@ fn main() {
             rebuild_leader_bindings(&cfg);
             ALARM_VOLUME.store(cfg.alarm_volume.min(100), Ordering::Relaxed);
             TIMER_START_SOUND.store(cfg.timer_start_sound, Ordering::Relaxed);
-            unsafe {
-                SetWindowsHookExW(WH_KEYBOARD_LL, timer_hook_proc, 0, 0);
-            }
+            install_hook_thread();
 
             // ── 트레이 아이콘 ──
             let show_i = MenuItem::with_id(app, "show", "열기", true, None::<&str>)?;

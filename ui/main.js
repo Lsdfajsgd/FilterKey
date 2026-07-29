@@ -747,28 +747,11 @@ window.addEventListener('DOMContentLoaded', async () => {
         toast('조합키 시작 버튼은 키 하나만 지정할 수 있어요');
         return;
       }
-      // 시스템/게임에서 흔히 쓰는 키를 리더로 고르면 알려준다
-      const RISKY = {
-        tab: 'Tab (창 전환·게임 내 기능)',
-        escape: 'Esc', esc: 'Esc',
-        enter: 'Enter', space: 'Space',
-        up: '방향키', down: '방향키', left: '방향키', right: '방향키',
-        backspace: 'Backspace', delete: 'Delete',
-      };
-      const risky = combo && RISKY[combo.trim().toLowerCase()];
       config.comboLeader = combo;
       saveConfig();
       renderDetail();
       renderList();
       renderAdminBanner();
-      if (risky) {
-        toast(
-          `${risky} 를 조합키로 지정했어요 — 단독으로 누르면 게임에 전달되지 않습니다 ` +
-            '(Alt+Tab 같은 수식키 조합은 정상 동작) · ` 나 CapsLock 처럼 안 쓰는 키를 권장해요',
-          6000
-        );
-        return;
-      }
       if (combo) {
         toast(
           isAdmin
