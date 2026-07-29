@@ -149,6 +149,7 @@ function renderDetail() {
     lbtn.textContent = config.comboLeader ? prettyHotkey(config.comboLeader) : '지정 안 됨';
     lbtn.classList.toggle('set', !!config.comboLeader);
     $('opt-always-admin').checked = !!config.alwaysAdmin;
+    $('opt-combo-swallow').checked = !!config.comboSwallow;
     const vol = config.alarmVolume ?? 85;
     $('sl-volume').value = vol;
     $('vol-label').textContent = vol;
@@ -728,6 +729,17 @@ window.addEventListener('DOMContentLoaded', async () => {
   $('opt-timer-start-sound').addEventListener('change', (e) => {
     config.timerStartSound = e.target.checked;
     saveConfig();
+  });
+
+  $('opt-combo-swallow').addEventListener('change', (e) => {
+    config.comboSwallow = e.target.checked;
+    saveConfig();
+    toast(
+      e.target.checked
+        ? '조합키 입력을 게임에 숨깁니다 — 혹시 키가 눌린 채로 남으면 이 옵션을 꺼주세요'
+        : '조합키 입력도 게임에 그대로 전달됩니다 (키 눌림 잔류 없음)',
+      4000
+    );
   });
 
   $('opt-always-admin').addEventListener('change', async (e) => {

@@ -413,7 +413,8 @@ struct AppConfig {
     beep_on_hotkey: bool,   // 단축키 동작 시 비프음
     alarm_volume: u32,      // 타이머 알림음 볼륨 (0~100)
     timer_start_sound: bool, // 타이머 시작 시 확인음 재생 여부
-    combo_leader: Option<String>, // 조합키 시작 버튼(리더 키). 누른 동안만 뒤 키를 가로챈다
+    combo_leader: Option<String>, // 조합키 시작 버튼(리더 키)
+    combo_swallow: bool, // 조합키로 누른 키를 게임에 전달하지 않을지 (기본 끔 — 켜면 키 눌림 잔류 위험)
     always_admin: bool, // 시작할 때 자동으로 관리자 권한으로 재실행 (게임 내 훅 동작에 필요)
     toggle_hotkey: Option<String>,
     active_preset: Option<String>,
@@ -429,6 +430,7 @@ impl Default for AppConfig {
             alarm_volume: 85,
             timer_start_sound: false,
             combo_leader: None,
+            combo_swallow: false,
             always_admin: false,
             toggle_hotkey: Some("ctrl+alt+f9".into()),
             active_preset: None,
@@ -679,6 +681,9 @@ static SWALLOWED: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 /// 단축키 녹화 중에는 훅이 아무것도 가로채지 않는다.
 /// (가로채면 리더 조합을 UI에서 입력할 수 없다)
 static CAPTURE_MODE: AtomicBool = AtomicBool::new(false);
+/// 조합키로 누른 키를 게임에 전달하지 않을지. 기본은 꺼짐 —
+/// 키를 가로채면(삼키면) keyup이 어긋나 키가 눌린 채로 남을 위험이 있다.
+static SWALLOW_COMBO: AtomicBool = AtomicBool::new(false);
 
 
 /// 키 토큰("a","f1","space","capslock","comma"...) → 윈도우 가상키 코드
@@ -896,9 +901,9 @@ fn handle_leader_combo(vk: u32) -> bool {
                 }
             });
         }
+        return true; // 바인딩된 키 → 게임에 전달하지 않음
     }
-    // 리더를 누른 동안의 입력은 매칭 여부와 상관없이 게임에 전달하지 않는다
-    true
+    false // 바인딩되지 않은 키는 건드리지 않는다
 }
 
 /// 저수준 키보드 훅.
@@ -947,11 +952,28 @@ unsafe extern "system" fn timer_hook_proc(code: i32, wparam: usize, lparam: isiz
                 if is_modifier_vk(vk) {
                     return CallNextHookEx(0, code, wparam, lparam);
                 }
-                if fresh {
-                    handle_leader_combo(vk);
+
+                let already = SWALLOWED.lock().unwrap().contains(&vk);
+
+                // 리더를 누르기 전부터 눌려 있던 키(이동키 홀드 등)는 절대 건드리지 않는다.
+                // 여기서 가로채면 그 키의 keyup까지 막혀 게임에 눌린 채로 남는다.
+                if !fresh && !already {
+                    return CallNextHookEx(0, code, wparam, lparam);
                 }
-                SWALLOWED.lock().unwrap().push(vk);
-                return 1; // 리더를 누른 동안의 입력은 게임에 전달하지 않음
+
+                if fresh {
+                    let matched = handle_leader_combo(vk);
+                    // 바인딩되지 않은 키, 또는 "가로채기" 옵션이 꺼져 있으면 그대로 통과.
+                    // 가로채지 않으면 keyup 어긋남이 원천적으로 발생할 수 없다.
+                    if !matched || !SWALLOW_COMBO.load(Ordering::Relaxed) {
+                        return CallNextHookEx(0, code, wparam, lparam);
+                    }
+                    let mut s = SWALLOWED.lock().unwrap();
+                    if !s.contains(&vk) {
+                        s.push(vk); // 오토리핏으로 중복 등록되지 않게 1회만
+                    }
+                }
+                return 1; // 바인딩된 조합키만, 옵션이 켜진 경우에만 가로챔
             }
 
             if fresh {
@@ -963,6 +985,15 @@ unsafe extern "system" fn timer_hook_proc(code: i32, wparam: usize, lparam: isiz
             if let Some(lk) = &leader {
                 if main_matches(lk, vk) {
                     LEADER_HELD.store(false, Ordering::Relaxed);
+                }
+            }
+
+            // 안전장치: 목록이 비정상적으로 커지면(뗌 이벤트를 놓친 경우) 초기화해
+            // 관계없는 키의 keyup이 계속 먹혀 키가 눌린 채로 남는 일을 막는다.
+            {
+                let mut s = SWALLOWED.lock().unwrap();
+                if s.len() > 8 {
+                    s.clear();
                 }
             }
 
@@ -1259,12 +1290,10 @@ fn test_alarm(volume: u32) {
 #[tauri::command]
 fn set_capture_mode(on: bool) {
     CAPTURE_MODE.store(on, Ordering::Relaxed);
-    if !on {
-        // 녹화 중 눌렸던 상태가 남지 않도록 정리
-        LEADER_HELD.store(false, Ordering::Relaxed);
-        TIMER_DOWN.lock().unwrap().clear();
-        SWALLOWED.lock().unwrap().clear();
-    }
+    // 녹화 시작/종료 어느 쪽이든 눌림 상태가 남지 않도록 정리
+    LEADER_HELD.store(false, Ordering::Relaxed);
+    TIMER_DOWN.lock().unwrap().clear();
+    SWALLOWED.lock().unwrap().clear();
 }
 
 #[tauri::command]
@@ -1279,6 +1308,7 @@ fn save_config(
     rebuild_leader_bindings(&config);
     ALARM_VOLUME.store(config.alarm_volume.min(100), Ordering::Relaxed);
     TIMER_START_SOUND.store(config.timer_start_sound, Ordering::Relaxed);
+    SWALLOW_COMBO.store(config.combo_swallow, Ordering::Relaxed);
     {
         let mut cfg = state.lock().unwrap();
         *cfg = config;
@@ -1352,6 +1382,7 @@ fn main() {
             rebuild_leader_bindings(&cfg);
             ALARM_VOLUME.store(cfg.alarm_volume.min(100), Ordering::Relaxed);
             TIMER_START_SOUND.store(cfg.timer_start_sound, Ordering::Relaxed);
+            SWALLOW_COMBO.store(cfg.combo_swallow, Ordering::Relaxed);
             install_hook_thread();
 
             // ── 트레이 아이콘 ──
