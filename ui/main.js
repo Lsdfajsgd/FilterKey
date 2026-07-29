@@ -121,6 +121,7 @@ function renderDetail() {
 
   $('view-values').classList.toggle('hidden', isSettings);
   $('view-settings').classList.toggle('hidden', !isSettings);
+  $('filteron-row').classList.toggle('hidden', !p);
   $('hotkey-row').classList.toggle('hidden', !p);
   $('timer-enable-row').classList.toggle('hidden', !p);
   $('timer-row').classList.toggle('hidden', !p);
@@ -154,6 +155,7 @@ function renderDetail() {
     title.value = p.name;
     title.readOnly = false;
     $('detail-sub').textContent = '프리셋 · 이름을 클릭해 수정할 수 있어요';
+    $('opt-filter-on').checked = p.filterOn !== false;
     const chip = $('preset-hotkey-btn');
     chip.textContent = p.hotkey ? prettyHotkey(p.hotkey) : '지정 안 됨';
     chip.classList.toggle('set', !!p.hotkey);
@@ -198,6 +200,33 @@ function select(id) {
   renderDetail();
 }
 
+// 같은 조합이 다른 곳에 이미 지정돼 있으면 그것을 해제한다 (마지막에 지정한 것이 이김)
+// kind: 'toggle' | 'preset' | 'timer', owner: 프리셋 객체(프리셋/타이머일 때)
+function claimHotkey(combo, kind, owner) {
+  if (!combo) return;
+  const norm = combo.trim().toLowerCase();
+  const taken = [];
+
+  if (kind !== 'toggle' && config.toggleHotkey && config.toggleHotkey.toLowerCase() === norm) {
+    config.toggleHotkey = null;
+    taken.push('ON/OFF 토글');
+  }
+  config.presets.forEach((x) => {
+    if (!(kind === 'preset' && x === owner) && x.hotkey && x.hotkey.toLowerCase() === norm) {
+      x.hotkey = null;
+      taken.push(`${x.name} 적용`);
+    }
+    if (!(kind === 'timer' && x === owner) && x.timerHotkey && x.timerHotkey.toLowerCase() === norm) {
+      x.timerHotkey = null;
+      taken.push(`${x.name} 타이머`);
+    }
+  });
+
+  if (taken.length) {
+    toast(`이미 쓰던 「${taken.join(', ')}」 단축키를 해제하고 새로 지정했어요`, 3800);
+  }
+}
+
 // 프리셋에 draft + 이름 + 타이머 저장
 function commitDraftToPreset(p) {
   p.waitMs = draft.wait;
@@ -209,6 +238,7 @@ function commitDraftToPreset(p) {
   const t = parseInt($('in-timer').value, 10);
   p.timerSeconds = isNaN(t) || t < 0 ? 0 : t;
   p.timerEnabled = $('opt-timer-enabled').checked;
+  p.filterOn = $('opt-filter-on').checked;
 }
 
 // ─────────────────────────── 단축키 캡처 ───────────────────────────
@@ -331,7 +361,25 @@ async function saveConfig() {
   try {
     const failed = await invoke('save_config', { config });
     if (failed && failed.length > 0) {
-      toast('일부 단축키 등록 실패 (충돌?): ' + failed.map(prettyHotkey).join(', '), 3600);
+      // 등록 실패한 단축키는 설정에서 비운다.
+      // (그대로 두면 저장할 때마다 재시도 → 실패 → 같은 오류 메시지가 계속 뜬다)
+      const failedNorm = failed.map((f) => f.trim().toLowerCase());
+      const isFailed = (hk) => hk && failedNorm.includes(hk.trim().toLowerCase());
+
+      if (isFailed(config.toggleHotkey)) config.toggleHotkey = null;
+      config.presets.forEach((p) => {
+        if (isFailed(p.hotkey)) p.hotkey = null;
+      });
+
+      await invoke('save_config', { config }); // 정리된 설정으로 한 번만 다시 저장
+      toast(
+        '다른 프로그램이 쓰고 있어 등록할 수 없는 단축키예요: ' +
+          failed.map(prettyHotkey).join(', ') +
+          ' — 해제했으니 다른 키로 지정해 주세요',
+        4200
+      );
+      renderDetail();
+      renderList();
     }
   } catch (e) {
     toast('설정 저장 실패: ' + e);
@@ -448,6 +496,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       waitMs: draft.wait, delayMs: draft.delay,
       repeatMs: draft.repeat, bounceMs: draft.bounce,
       hotkey: null,
+      filterOn: true,
       timerEnabled: false, timerSeconds: 0, timerHotkey: null,
     };
     config.presets.push(p);
@@ -481,11 +530,21 @@ window.addEventListener('DOMContentLoaded', async () => {
     const p = selPreset();
     if (!p) return;
     captureHotkey((combo) => {
+      claimHotkey(combo, 'preset', p); // 중복이면 이전 것 해제 (마지막이 이김)
       p.hotkey = combo;
       saveConfig();
       renderDetail();
       renderList();
     });
+  });
+
+  // 적용 시 필터키 켜기 on/off → 프리셋에 저장
+  $('opt-filter-on').addEventListener('change', (e) => {
+    const p = selPreset();
+    if (!p) return;
+    p.filterOn = e.target.checked;
+    saveConfig();
+    toast(e.target.checked ? '적용 시 필터키를 켭니다' : '적용 시 필터키를 끕니다 (값만 복원)');
   });
 
   // 타이머 사용 on/off → 프리셋에 저장 (적용 중이면 즉시 바인딩 반영)
@@ -516,9 +575,11 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (!p) return;
     // 타이머는 단일키/조합 모두 허용 (allowSingle = true)
     captureHotkey((combo) => {
+      claimHotkey(combo, 'timer', p); // 중복이면 이전 것 해제 (마지막이 이김)
       p.timerHotkey = combo;
       saveConfig();
       renderDetail();
+      renderList();
     }, true);
   });
 
@@ -545,9 +606,11 @@ window.addEventListener('DOMContentLoaded', async () => {
   // 설정: 토글 단축키
   $('toggle-hotkey-btn').addEventListener('click', () =>
     captureHotkey((combo) => {
+      claimHotkey(combo, 'toggle', null); // 중복이면 이전 것 해제 (마지막이 이김)
       config.toggleHotkey = combo;
       saveConfig();
       renderDetail();
+      renderList();
     })
   );
   $('toggle-hotkey-clear').addEventListener('click', () => {

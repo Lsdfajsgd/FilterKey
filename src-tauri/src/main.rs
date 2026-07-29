@@ -330,9 +330,15 @@ struct Preset {
     repeat_ms: u32,
     bounce_ms: u32,
     hotkey: Option<String>,
+    #[serde(default = "yes")]
+    filter_on: bool, // 이 프리셋 적용 시 필터키를 켤지 (윈도우 기본값 복원용 프리셋은 false)
     timer_enabled: bool,          // 이 프리셋의 타이머 사용 여부
     timer_seconds: u32,           // 알림음까지 시간(초)
     timer_hotkey: Option<String>, // 타이머를 시작하는 키
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Default for Preset {
@@ -345,6 +351,7 @@ impl Default for Preset {
             repeat_ms: 0,
             bounce_ms: 0,
             hotkey: None,
+            filter_on: true,
             timer_enabled: false,
             timer_seconds: 0,
             timer_hotkey: None,
@@ -404,6 +411,7 @@ impl Default for AppConfig {
                     repeat_ms: 500,
                     bounce_ms: 0,
                     hotkey: None,
+                    filter_on: false, // 기본값 복원 = 필터키 끄기 (켜면 키가 씹힘)
                     ..Default::default()
                 },
             ],
@@ -504,10 +512,26 @@ fn config_path(app: &AppHandle) -> std::path::PathBuf {
 }
 
 fn load_config(app: &AppHandle) -> AppConfig {
-    std::fs::read_to_string(config_path(app))
-        .ok()
+    let raw = std::fs::read_to_string(config_path(app)).ok();
+    let had_filter_on = raw
+        .as_deref()
+        .map(|s| s.contains("filterOn"))
+        .unwrap_or(false);
+    let mut cfg: AppConfig = raw
         .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+
+    // 구버전 설정 마이그레이션: filterOn 필드가 없던 시절의 "윈도우 기본값" 프리셋은
+    // 필터키를 켠 채 적용되어 키가 씹혔다. 값이 그대로면 필터키 끄기로 보정한다.
+    if !had_filter_on {
+        for p in cfg.presets.iter_mut() {
+            if p.id == "windefault" && p.wait_ms >= 1000 && p.delay_ms >= 1000 {
+                p.filter_on = false;
+            }
+        }
+    }
+    dedupe_hotkeys(&mut cfg); // 중복 단축키 정리 (마지막 것만 유지)
+    cfg
 }
 
 fn persist_config_file(app: &AppHandle, cfg: &AppConfig) {
@@ -812,7 +836,16 @@ fn apply_preset_impl(app: &AppHandle, id: &str) -> Result<SysState, String> {
         cfg.active_preset = Some(id.to_string());
         (p, cfg.persist_registry)
     };
-    set_sys(true, preset.wait_ms, preset.delay_ms, preset.repeat_ms, preset.bounce_ms, persist)?;
+    // filter_on=false인 프리셋(예: 윈도우 기본값)은 값만 되돌리고 필터키를 끈다.
+    // (기본값을 필터키 ON으로 적용하면 1초 이상 눌러야 인식되어 키가 씹힌다)
+    set_sys(
+        preset.filter_on,
+        preset.wait_ms,
+        preset.delay_ms,
+        preset.repeat_ms,
+        preset.bounce_ms,
+        persist,
+    )?;
     {
         let state = app.state::<ConfigState>();
         let cfg = state.lock().unwrap();
@@ -830,33 +863,94 @@ fn matches_shortcut(pressed: &Shortcut, config_str: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// 설정의 모든 단축키를 다시 등록. 실패한 단축키 문자열 목록을 반환.
+/// 현재 등록되어 있는 단축키 문자열 (해제를 확실히 하기 위해 직접 추적)
+static REGISTERED_HOTKEYS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// 같은 조합이 여러 곳에 지정돼 있으면 **가장 마지막 것만 남기고** 앞의 것들을 비운다.
+/// (사용자가 나중에 지정한 것이 이기고, 이전 설정은 자동 취소)
+/// 순서: 토글 단축키 → 프리셋 적용 단축키 → 프리셋 타이머 단축키
+fn dedupe_hotkeys(cfg: &mut AppConfig) {
+    // 뒤에서부터 훑으며 이미 본 조합이면 비운다
+    let mut seen: Vec<String> = Vec::new();
+    let mut claim = |slot: &mut Option<String>| {
+        if let Some(hk) = slot.clone() {
+            let norm = hk.trim().to_lowercase();
+            if seen.contains(&norm) {
+                *slot = None; // 뒤쪽(나중)에 이미 쓰인 조합 → 앞쪽 것은 취소
+            } else {
+                seen.push(norm);
+            }
+        }
+    };
+
+    for p in cfg.presets.iter_mut().rev() {
+        claim(&mut p.timer_hotkey);
+        claim(&mut p.hotkey);
+    }
+    claim(&mut cfg.toggle_hotkey);
+}
+
+/// 설정의 모든 단축키를 다시 등록. 형식 오류로 등록 못 한 것만 반환한다.
+///
+/// - 이전에 등록한 단축키를 하나씩 명시적으로 해제한 뒤 재등록한다.
+///   (unregister_all만 믿으면 실패 시 옛 단축키가 남아 "예전 값이 계속 먹는" 문제가 생긴다)
+/// - 같은 조합이 여러 곳에 지정되면 **나중에 지정한 것이 이기고 앞의 것은 자동 해제**된다.
 fn sync_hotkeys(app: &AppHandle, cfg: &AppConfig) -> Vec<String> {
     let gs = app.global_shortcut();
-    let _ = gs.unregister_all();
-    let mut failed: Vec<String> = Vec::new();
 
-    let mut candidates: Vec<&str> = Vec::new();
+    // 1) 이전 등록분을 하나씩 확실히 해제
+    {
+        let mut prev = REGISTERED_HOTKEYS.lock().unwrap();
+        for s in prev.iter() {
+            if let Ok(sc) = Shortcut::from_str(s) {
+                let _ = gs.unregister(sc);
+            }
+        }
+        prev.clear();
+    }
+    let _ = gs.unregister_all(); // 혹시 남은 것까지 정리
+
+    // 2) 후보 수집 (뒤에 오는 것이 우선 — 프리셋 목록 순서상 나중 항목이 이김)
+    let mut candidates: Vec<String> = Vec::new();
     if let Some(hk) = &cfg.toggle_hotkey {
-        candidates.push(hk.as_str());
+        candidates.push(hk.clone());
     }
     for p in &cfg.presets {
         if let Some(hk) = &p.hotkey {
-            candidates.push(hk.as_str());
+            candidates.push(hk.clone());
         }
         // 타이머 단축키는 전역 단축키(키를 삼킴)가 아니라 패시브 훅으로 처리하므로 여기서 등록하지 않는다.
     }
 
-    for s in candidates {
-        match Shortcut::from_str(s) {
-            Ok(sc) => {
-                if gs.register(sc).is_err() {
-                    failed.push(s.to_string());
-                }
-            }
-            Err(_) => failed.push(s.to_string()),
+    // 3) 중복 제거 — 같은 조합은 마지막 것만 남긴다 (뒤에서부터 훑어 처음 만난 것만 유지)
+    let mut seen: Vec<String> = Vec::new();
+    let mut unique_rev: Vec<String> = Vec::new();
+    for s in candidates.iter().rev() {
+        let norm = s.trim().to_lowercase();
+        if !seen.contains(&norm) {
+            seen.push(norm);
+            unique_rev.push(s.clone());
         }
     }
+
+    // 4) 등록
+    let mut failed: Vec<String> = Vec::new();
+    let mut registered: Vec<String> = Vec::new();
+    for s in unique_rev.into_iter().rev() {
+        match Shortcut::from_str(&s) {
+            Ok(sc) => {
+                // 혹시 시스템에 남아 있을 수 있으니 등록 전에 한 번 더 해제 시도
+                let _ = gs.unregister(sc);
+                if gs.register(sc).is_ok() {
+                    registered.push(s);
+                } else {
+                    failed.push(s);
+                }
+            }
+            Err(_) => failed.push(s),
+        }
+    }
+    *REGISTERED_HOTKEYS.lock().unwrap() = registered;
     failed
 }
 
@@ -975,8 +1069,9 @@ fn test_alarm(volume: u32) {
 fn save_config(
     app: AppHandle,
     state: State<ConfigState>,
-    config: AppConfig,
+    mut config: AppConfig,
 ) -> Result<Vec<String>, String> {
+    dedupe_hotkeys(&mut config); // 중복이면 마지막 것만 남기고 앞의 것은 취소
     let failed = sync_hotkeys(&app, &config);
     rebuild_timer_bindings(&config);
     ALARM_VOLUME.store(config.alarm_volume.min(100), Ordering::Relaxed);
