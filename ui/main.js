@@ -47,6 +47,11 @@ function prettyHotkey(hk) {
       if (low === 'alt') return 'Alt';
       if (low === 'shift') return 'Shift';
       if (low === 'super') return 'Win';
+      // 리더 키는 실제로 지정된 키 이름으로 보여준다
+      if (low === 'leader') {
+        const l = config && config.comboLeader;
+        return l ? prettyHotkey(l) : '조합키';
+      }
       if (KEY_DISPLAY[low]) return KEY_DISPLAY[low];
       return u.length === 1 ? u.toUpperCase() : u;
     })
@@ -140,6 +145,9 @@ function renderDetail() {
     $('opt-beep').checked = config.beepOnHotkey;
     $('opt-hanja-perm').checked = hanjaPerm;
     $('opt-timer-start-sound').checked = !!config.timerStartSound;
+    const lbtn = $('leader-btn');
+    lbtn.textContent = config.comboLeader ? prettyHotkey(config.comboLeader) : '지정 안 됨';
+    lbtn.classList.toggle('set', !!config.comboLeader);
     const vol = config.alarmVolume ?? 85;
     $('sl-volume').value = vol;
     $('vol-label').textContent = vol;
@@ -274,10 +282,33 @@ const MOD_CODE = {
   MetaLeft: 'super', MetaRight: 'super',
 };
 
-function captureHotkey(cb, allowSingle = false) {
+let captureAllowLeader = false; // 캡처 중 "리더+키" 조합을 만들 수 있는지
+let captureLeaderHeld = false;  // 캡처 중 리더 키가 눌려 있는지
+
+// e.code / 수식키를 설정 문자열(예: 'capslock','shift','f13')로 변환
+function codeToToken(e) {
+  if (MOD_CODE[e.code]) return MOD_CODE[e.code];
+  if (/^Key([A-Z])$/.test(e.code)) return e.code.slice(3).toLowerCase();
+  if (/^Digit(\d)$/.test(e.code)) return e.code.slice(5);
+  if (/^F(\d{1,2})$/.test(e.code)) return e.code.toLowerCase();
+  if (CODE_MAP[e.code]) return CODE_MAP[e.code].toLowerCase();
+  return null;
+}
+
+// 지금 눌린 키가 설정된 리더 키인지
+function isLeaderEvent(e) {
+  const leader = config && config.comboLeader;
+  if (!leader) return false;
+  const tok = codeToToken(e);
+  return !!tok && tok === leader.trim().toLowerCase();
+}
+
+function captureHotkey(cb, allowSingle = false, allowLeader = false) {
   captureCallback = cb;
   captureAllowSingle = allowSingle;
+  captureAllowLeader = allowLeader;
   capturePendingMod = null;
+  captureLeaderHeld = false;
   $('hotkey-overlay').classList.remove('hidden');
 }
 
@@ -285,6 +316,7 @@ function finishCapture(combo) {
   const cb = captureCallback;
   captureCallback = null;
   capturePendingMod = null;
+  captureLeaderHeld = false;
   $('hotkey-overlay').classList.add('hidden');
   cb(combo);
 }
@@ -308,6 +340,13 @@ window.addEventListener(
       return;
     }
 
+    // 리더 키를 눌렀으면: 이어서 누르는 키와 "리더+X" 조합을 만든다
+    if (captureAllowLeader && isLeaderEvent(e)) {
+      captureLeaderHeld = true;
+      capturePendingMod = null;
+      return;
+    }
+
     let key = null;
     if (/^Key([A-Z])$/.test(e.code)) key = e.code.slice(3).toLowerCase();
     else if (/^Digit(\d)$/.test(e.code)) key = e.code.slice(5);
@@ -326,13 +365,19 @@ window.addEventListener(
     // 일반 키가 잡혔으니 단독 수식키 후보는 취소
     capturePendingMod = null;
 
+    // 리더를 누른 상태 → "leader+키"로 확정
+    if (captureLeaderHeld) {
+      finishCapture('leader+' + key);
+      return;
+    }
+
     const mods = [];
     if (e.ctrlKey) mods.push('ctrl');
     if (e.altKey) mods.push('alt');
     if (e.shiftKey) mods.push('shift');
     if (e.metaKey) mods.push('super');
 
-    // 일반 키 단독은 게임 입력과 충돌 → 기본은 막지만, allowSingle이면 허용(타이머용)
+    // 일반 키 단독은 게임 입력과 충돌 → 기본은 막지만, allowSingle이면 허용
     if (mods.length === 0 && !/^f\d{1,2}$/.test(key) && !captureAllowSingle) {
       toast('일반 키 단독은 게임 입력과 충돌해요 — Ctrl/Alt/Shift 조합 또는 F키를 사용하세요');
       return;
@@ -347,7 +392,13 @@ window.addEventListener(
 window.addEventListener(
   'keyup',
   (e) => {
-    if (!captureCallback || !captureAllowSingle || !capturePendingMod) return;
+    if (!captureCallback) return;
+    // 리더 키를 뗐으면 조합 대기 해제
+    if (captureLeaderHeld && isLeaderEvent(e)) {
+      captureLeaderHeld = false;
+      return;
+    }
+    if (!captureAllowSingle || !capturePendingMod) return;
     if (MOD_CODE[e.code] === capturePendingMod) {
       finishCapture(capturePendingMod);
     }
@@ -529,13 +580,18 @@ window.addEventListener('DOMContentLoaded', async () => {
   $('preset-hotkey-btn').addEventListener('click', () => {
     const p = selPreset();
     if (!p) return;
-    captureHotkey((combo) => {
-      claimHotkey(combo, 'preset', p); // 중복이면 이전 것 해제 (마지막이 이김)
-      p.hotkey = combo;
-      saveConfig();
-      renderDetail();
-      renderList();
-    });
+    // 프리셋 단축키: 단일키 허용 + 리더 조합 허용
+    captureHotkey(
+      (combo) => {
+        claimHotkey(combo, 'preset', p); // 중복이면 이전 것 해제 (마지막이 이김)
+        p.hotkey = combo;
+        saveConfig();
+        renderDetail();
+        renderList();
+      },
+      true,
+      true
+    );
   });
 
   // 적용 시 필터키 켜기 on/off → 프리셋에 저장
@@ -655,6 +711,39 @@ window.addEventListener('DOMContentLoaded', async () => {
   $('opt-timer-start-sound').addEventListener('change', (e) => {
     config.timerStartSound = e.target.checked;
     saveConfig();
+  });
+
+  // ─────────── 조합키 시작 버튼(리더 키) ───────────
+  $('leader-btn').addEventListener('click', () =>
+    // 리더는 단일 키/수식키 모두 가능 (조합은 불가 — 시작 버튼이므로)
+    captureHotkey((combo) => {
+      if (combo && combo.includes('+')) {
+        toast('조합키 시작 버튼은 키 하나만 지정할 수 있어요');
+        return;
+      }
+      config.comboLeader = combo;
+      saveConfig();
+      renderDetail();
+      renderList();
+      if (combo) {
+        toast(`「${prettyHotkey(combo)}」를 누른 채 다른 키를 누르면 프리셋 단축키로 쓸 수 있어요`, 4200);
+      }
+    }, true)
+  );
+  $('leader-clear').addEventListener('click', () => {
+    config.comboLeader = null;
+    // 리더 기반 단축키는 더 이상 동작할 수 없으므로 함께 해제
+    let cleared = 0;
+    config.presets.forEach((p) => {
+      if (p.hotkey && p.hotkey.toLowerCase().startsWith('leader+')) {
+        p.hotkey = null;
+        cleared++;
+      }
+    });
+    saveConfig();
+    renderDetail();
+    renderList();
+    toast(cleared ? `조합키 해제 — 관련 프리셋 단축키 ${cleared}개도 함께 해제했어요` : '조합키 시작 버튼 해제됨');
   });
 
   // ─────────── 한자키 제거 (Scancode Map) ───────────

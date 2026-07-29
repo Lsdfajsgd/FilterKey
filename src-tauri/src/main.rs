@@ -367,6 +367,7 @@ struct AppConfig {
     beep_on_hotkey: bool,   // 단축키 동작 시 비프음
     alarm_volume: u32,      // 타이머 알림음 볼륨 (0~100)
     timer_start_sound: bool, // 타이머 시작 시 확인음 재생 여부
+    combo_leader: Option<String>, // 조합키 시작 버튼(리더 키). 누른 동안만 뒤 키를 가로챈다
     toggle_hotkey: Option<String>,
     active_preset: Option<String>,
     presets: Vec<Preset>,
@@ -380,6 +381,7 @@ impl Default for AppConfig {
             beep_on_hotkey: true,
             alarm_volume: 85,
             timer_start_sound: false,
+            combo_leader: None,
             toggle_hotkey: Some("ctrl+alt+f9".into()),
             active_preset: None,
             presets: vec![
@@ -617,6 +619,23 @@ static TIMER_APP: OnceLock<AppHandle> = OnceLock::new();
 static TIMER_BINDINGS: Mutex<Vec<TimerBinding>> = Mutex::new(Vec::new());
 static TIMER_DOWN: Mutex<Vec<u32>> = Mutex::new(Vec::new()); // 현재 눌린 키(오토리핏 방지용)
 
+// ── 조합키 시작 버튼(리더 키) ──
+// 리더를 누르고 있는 동안 눌린 키는 메이플헬퍼가 가로채(게임에 전달 안 함) 프리셋을 전환한다.
+// 리더에서 손을 떼면 아무것도 가로채지 않는다.
+static LEADER_KEY: Mutex<Option<MainKey>> = Mutex::new(None);
+static LEADER_HELD: AtomicBool = AtomicBool::new(false);
+/// (조합할 키, 프리셋 id)
+static LEADER_BINDINGS: Mutex<Vec<(MainKey, String)>> = Mutex::new(Vec::new());
+/// 가로챈 keydown의 vk 목록 — 대응하는 keyup도 같이 삼켜 키 눌림이 남지 않게 한다
+static SWALLOWED: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+impl MainKey {
+    /// Shift/Ctrl/Alt/Win 계열인지 — 이들은 게임 조작에 필수라 리더로 써도 가로채지 않는다
+    fn is_modifier(&self) -> bool {
+        !matches!(self, MainKey::Exact(_))
+    }
+}
+
 /// 키 토큰("a","f1","space","capslock","comma"...) → 윈도우 가상키 코드
 fn token_to_vk(t: &str) -> Option<u32> {
     // 알파벳
@@ -724,6 +743,44 @@ fn rebuild_timer_bindings(cfg: &AppConfig) {
     *TIMER_BINDINGS.lock().unwrap() = v;
 }
 
+/// 리더 키 설정과 "리더+X" 형태의 프리셋 단축키를 훅용 바인딩으로 만든다.
+fn rebuild_leader_bindings(cfg: &AppConfig) {
+    let leader = cfg
+        .combo_leader
+        .as_deref()
+        .and_then(|s| parse_timer_key(s))
+        .map(|(m, _, _, _)| m);
+    let has_leader = leader.is_some();
+    *LEADER_KEY.lock().unwrap() = leader;
+    if !has_leader {
+        LEADER_HELD.store(false, Ordering::Relaxed);
+        LEADER_BINDINGS.lock().unwrap().clear();
+        return;
+    }
+
+    let mut v = Vec::new();
+    for p in &cfg.presets {
+        if let Some(hk) = &p.hotkey {
+            // "leader+X" 형태만 훅에서 처리 (나머지는 전역 단축키로 등록됨)
+            if let Some(rest) = strip_leader_prefix(hk) {
+                if let Some(vk) = token_to_vk(&rest.trim().to_lowercase()) {
+                    v.push((MainKey::Exact(vk), p.id.clone()));
+                }
+            }
+        }
+    }
+    *LEADER_BINDINGS.lock().unwrap() = v;
+}
+
+/// "leader+X" → Some("X"), 그 외 → None
+fn strip_leader_prefix(hk: &str) -> Option<String> {
+    let lower = hk.trim().to_lowercase();
+    lower
+        .strip_prefix("leader+")
+        .map(|rest| rest.to_string())
+        .filter(|r| !r.is_empty())
+}
+
 fn key_down(vk: i32) -> bool {
     unsafe { (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 }
 }
@@ -767,7 +824,33 @@ fn maybe_trigger_timer(vk: u32) {
     }
 }
 
-/// 패시브 훅: 키를 절대 삼키지 않고(항상 CallNextHookEx), 눌림만 감지한다.
+/// 리더 키를 누른 동안 눌린 키를 처리한다. 가로챌지(true) 여부를 반환.
+fn handle_leader_combo(vk: u32) -> bool {
+    let preset_id = LEADER_BINDINGS
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(k, _)| main_matches(k, vk))
+        .map(|(_, id)| id.clone());
+
+    if let Some(id) = preset_id {
+        if let Some(app) = TIMER_APP.get() {
+            // 훅 콜백은 즉시 반환해야 하므로 실제 적용은 별도 스레드에서
+            let handle = app.clone();
+            std::thread::spawn(move || {
+                if apply_preset_impl(&handle, &id).is_ok() {
+                    beep_feedback(&handle, 990);
+                }
+            });
+        }
+    }
+    // 리더를 누른 동안의 입력은 매칭 여부와 상관없이 게임에 전달하지 않는다
+    true
+}
+
+/// 저수준 키보드 훅.
+/// - 평소에는 아무것도 가로채지 않고 감지만 한다(타이머 트리거).
+/// - 리더 키를 누르고 있는 동안에만 뒤따르는 키를 가로채 프리셋을 전환한다.
 unsafe extern "system" fn timer_hook_proc(code: i32, wparam: usize, lparam: isize) -> isize {
     if code >= 0 {
         let msg = wparam as u32;
@@ -777,8 +860,11 @@ unsafe extern "system" fn timer_hook_proc(code: i32, wparam: usize, lparam: isiz
         const WM_SYSKEYDOWN: u32 = 0x0104;
         const WM_KEYUP: u32 = 0x0101;
         const WM_SYSKEYUP: u32 = 0x0105;
+
+        let leader = LEADER_KEY.lock().unwrap().clone();
+
         if msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN {
-            // 오토리핏 무시: 이미 눌린 상태면 무시하고, 처음 눌릴 때만 트리거
+            // 오토리핏 무시: 처음 눌릴 때만 처리
             let fresh = {
                 let mut down = TIMER_DOWN.lock().unwrap();
                 if down.contains(&vk) {
@@ -788,11 +874,53 @@ unsafe extern "system" fn timer_hook_proc(code: i32, wparam: usize, lparam: isiz
                     true
                 }
             };
+
+            if let Some(lk) = &leader {
+                if main_matches(lk, vk) {
+                    LEADER_HELD.store(true, Ordering::Relaxed);
+                    // 리더가 Shift/Ctrl/Alt면 게임 조작에 필요하므로 그대로 통과시키고,
+                    // 그 외 키(CapsLock, ` 등)는 가로채 원래 기능이 발동하지 않게 한다.
+                    if !lk.is_modifier() {
+                        SWALLOWED.lock().unwrap().push(vk);
+                        return 1;
+                    }
+                    return CallNextHookEx(0, code, wparam, lparam);
+                }
+            }
+
+            if LEADER_HELD.load(Ordering::Relaxed) {
+                if fresh {
+                    handle_leader_combo(vk);
+                }
+                SWALLOWED.lock().unwrap().push(vk);
+                return 1; // 리더를 누른 동안의 입력은 게임에 전달하지 않음
+            }
+
             if fresh {
                 maybe_trigger_timer(vk);
             }
         } else if msg == WM_KEYUP || msg == WM_SYSKEYUP {
             TIMER_DOWN.lock().unwrap().retain(|&x| x != vk);
+
+            if let Some(lk) = &leader {
+                if main_matches(lk, vk) {
+                    LEADER_HELD.store(false, Ordering::Relaxed);
+                }
+            }
+
+            // 눌림을 가로챈 키는 뗌도 같이 가로채야 게임에 키가 눌린 채로 남지 않는다
+            let was_swallowed = {
+                let mut s = SWALLOWED.lock().unwrap();
+                if let Some(pos) = s.iter().position(|&x| x == vk) {
+                    s.remove(pos);
+                    true
+                } else {
+                    false
+                }
+            };
+            if was_swallowed {
+                return 1;
+            }
         }
     }
     CallNextHookEx(0, code, wparam, lparam)
@@ -917,9 +1045,12 @@ fn sync_hotkeys(app: &AppHandle, cfg: &AppConfig) -> Vec<String> {
     }
     for p in &cfg.presets {
         if let Some(hk) = &p.hotkey {
-            candidates.push(hk.clone());
+            // "리더+X" 조합은 저수준 훅에서 처리하므로 전역 단축키로 등록하지 않는다
+            if strip_leader_prefix(hk).is_none() {
+                candidates.push(hk.clone());
+            }
         }
-        // 타이머 단축키는 전역 단축키(키를 삼킴)가 아니라 패시브 훅으로 처리하므로 여기서 등록하지 않는다.
+        // 타이머 단축키도 훅에서 처리 (키를 삼키지 않고 통과시켜야 하므로)
     }
 
     // 3) 중복 제거 — 같은 조합은 마지막 것만 남긴다 (뒤에서부터 훑어 처음 만난 것만 유지)
@@ -1074,6 +1205,7 @@ fn save_config(
     dedupe_hotkeys(&mut config); // 중복이면 마지막 것만 남기고 앞의 것은 취소
     let failed = sync_hotkeys(&app, &config);
     rebuild_timer_bindings(&config);
+    rebuild_leader_bindings(&config);
     ALARM_VOLUME.store(config.alarm_volume.min(100), Ordering::Relaxed);
     TIMER_START_SOUND.store(config.timer_start_sound, Ordering::Relaxed);
     {
@@ -1137,6 +1269,7 @@ fn main() {
             // 타이머용 패시브 키보드 훅 설치 (키를 삼키지 않고 감지만)
             let _ = TIMER_APP.set(handle.clone());
             rebuild_timer_bindings(&cfg);
+            rebuild_leader_bindings(&cfg);
             ALARM_VOLUME.store(cfg.alarm_volume.min(100), Ordering::Relaxed);
             TIMER_START_SOUND.store(cfg.timer_start_sound, Ordering::Relaxed);
             unsafe {
