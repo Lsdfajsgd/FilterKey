@@ -796,6 +796,20 @@ fn key_down(vk: i32) -> bool {
     unsafe { (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 }
 }
 
+/// Ctrl/Alt/Shift/Win 중 하나라도 눌려 있는지.
+/// 이 상태의 입력은 Alt+Tab 같은 OS/게임 기본 조합이므로 리더로 가로채면 안 된다.
+fn any_modifier_down() -> bool {
+    key_down(0x11) || key_down(0x12) || key_down(0x10) || key_down(0x5B) || key_down(0x5C)
+}
+
+/// 그 자체가 수식키인 가상키인지 (가로채면 조합이 깨지므로 항상 통과시킨다)
+fn is_modifier_vk(vk: u32) -> bool {
+    matches!(
+        vk,
+        0x10 | 0x11 | 0x12 | 0xA0 | 0xA1 | 0xA2 | 0xA3 | 0xA4 | 0xA5 | 0x5B | 0x5C
+    )
+}
+
 fn main_matches(m: &MainKey, vk: u32) -> bool {
     match m {
         MainKey::Exact(x) => *x == vk,
@@ -892,6 +906,11 @@ unsafe extern "system" fn timer_hook_proc(code: i32, wparam: usize, lparam: isiz
 
             if let Some(lk) = &leader {
                 if main_matches(lk, vk) {
+                    // Alt+Tab / Ctrl+Tab 처럼 수식키와 함께 눌린 경우는 OS·게임의 기본 조합이므로
+                    // 리더로 취급하지 않고 그대로 통과시킨다.
+                    if any_modifier_down() {
+                        return CallNextHookEx(0, code, wparam, lparam);
+                    }
                     LEADER_HELD.store(true, Ordering::Relaxed);
                     // 리더가 Shift/Ctrl/Alt면 게임 조작에 필요하므로 그대로 통과시키고,
                     // 그 외 키(CapsLock, ` 등)는 가로채 원래 기능이 발동하지 않게 한다.
@@ -904,6 +923,10 @@ unsafe extern "system" fn timer_hook_proc(code: i32, wparam: usize, lparam: isiz
             }
 
             if LEADER_HELD.load(Ordering::Relaxed) {
+                // 수식키 자체는 가로채지 않는다 (가로채면 Alt+Tab 등 조합이 깨진다)
+                if is_modifier_vk(vk) {
+                    return CallNextHookEx(0, code, wparam, lparam);
+                }
                 if fresh {
                     handle_leader_combo(vk);
                 }
