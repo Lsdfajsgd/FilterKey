@@ -296,8 +296,8 @@ fn is_admin() -> bool {
     unsafe { IsUserAnAdmin() != 0 }
 }
 
-#[tauri::command]
-fn restart_as_admin(app: AppHandle) -> Result<(), String> {
+/// 관리자 권한으로 자기 자신을 다시 실행한다 (UAC 확인창).
+fn spawn_elevated() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let exe_w = to_wide(&exe.to_string_lossy());
     let verb = to_wide("runas");
@@ -314,6 +314,12 @@ fn restart_as_admin(app: AppHandle) -> Result<(), String> {
     if r <= 32 {
         return Err("관리자 권한 실행이 취소되었거나 실패했습니다".into());
     }
+    Ok(())
+}
+
+#[tauri::command]
+fn restart_as_admin(app: AppHandle) -> Result<(), String> {
+    spawn_elevated()?;
     app.exit(0);
     Ok(())
 }
@@ -368,6 +374,7 @@ struct AppConfig {
     alarm_volume: u32,      // 타이머 알림음 볼륨 (0~100)
     timer_start_sound: bool, // 타이머 시작 시 확인음 재생 여부
     combo_leader: Option<String>, // 조합키 시작 버튼(리더 키). 누른 동안만 뒤 키를 가로챈다
+    always_admin: bool, // 시작할 때 자동으로 관리자 권한으로 재실행 (게임 내 훅 동작에 필요)
     toggle_hotkey: Option<String>,
     active_preset: Option<String>,
     presets: Vec<Preset>,
@@ -382,6 +389,7 @@ impl Default for AppConfig {
             alarm_volume: 85,
             timer_start_sound: false,
             combo_leader: None,
+            always_admin: false,
             toggle_hotkey: Some("ctrl+alt+f9".into()),
             active_preset: None,
             presets: vec![
@@ -1283,6 +1291,15 @@ fn main() {
         .setup(|app| {
             let handle = app.handle().clone();
             let cfg = load_config(&handle);
+
+            // "항상 관리자 권한" 옵션이 켜져 있으면 시작 시 자동으로 승격 재실행.
+            // (게임이 관리자 권한이면 일반 권한 훅은 게임 입력을 볼 수 없다 — UIPI)
+            if cfg.always_admin && !unsafe { IsUserAnAdmin() != 0 } {
+                if spawn_elevated().is_ok() {
+                    handle.exit(0);
+                    return Ok(());
+                }
+            }
             app.manage(Mutex::new(cfg.clone()));
             sync_hotkeys(&handle, &cfg);
 

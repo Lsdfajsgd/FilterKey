@@ -290,6 +290,11 @@ code {
   font-weight: 700;
 }
 .update-banner .btn { background: var(--accent); border-color: var(--accent-dim); color: #fff; }
+.update-banner.warn {
+  background: linear-gradient(90deg, rgba(212, 160, 40, .25), rgba(212, 160, 40, .08));
+  border-bottom-color: #8a6a1e;
+}
+.update-banner.warn .btn { background: #c9932c; border-color: #8a6a1e; }
 .update-banner .btn:disabled { opacity: .6; cursor: default; }
 
 /* 토스트 / 오버레이 */

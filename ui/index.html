@@ -37,6 +37,10 @@
         <span id="update-text">새 버전 사용 가능</span>
         <button id="update-btn" class="btn tiny">지금 업데이트</button>
       </div>
+      <div id="admin-banner" class="update-banner warn hidden">
+        <span>⚠ 일반 권한이라 <b>게임 안에서는</b> 조합키·타이머가 동작하지 않아요</span>
+        <button id="admin-banner-btn" class="btn tiny">관리자 권한으로 재시작</button>
+      </div>
       <header class="detail-head">
         <div class="detail-title-wrap">
           <input type="text" id="detail-title" readonly value="현재 값" />
@@ -157,10 +161,16 @@
             <label class="switch small"><input type="checkbox" id="opt-hanja-perm" /><span class="slider-sw"></span></label>
           </div>
         </div>
-        <div class="vrow" title="한자키 제거를 레지스트리(HKLM)에 등록/해제하려면 관리자 권한이 필요합니다 · 한 번 등록하고 재부팅하면 메이플헬퍼를 켜두지 않아도 항상 적용됩니다">
+        <div class="vrow" title="메이플은 관리자 권한으로 실행되기 때문에, 일반 권한의 메이플헬퍼는 게임으로 가는 키 입력을 볼 수 없습니다(윈도우 UIPI 정책) · 조합키(리더) 단축키와 타이머를 게임 안에서 쓰려면 관리자 권한이 필요합니다 · 한자키 제거 등록에도 필요합니다">
           <div class="lbl"><label>관리자 권한</label><span class="regname" id="admin-state">확인 중…</span></div>
           <div class="row-right">
             <button class="btn tiny" id="btn-admin">관리자 권한으로 재시작</button>
+          </div>
+        </div>
+        <div class="vrow" title="앱을 켤 때마다 자동으로 관리자 권한으로 다시 실행합니다 (UAC 확인창이 한 번 뜹니다) · 게임 안에서 조합키/타이머를 쓰려면 켜두는 것을 권장합니다">
+          <div class="lbl"><label>항상 관리자 권한으로 실행</label><span class="regname">시작 시 UAC 확인창 1회</span></div>
+          <div class="row-right">
+            <label class="switch small"><input type="checkbox" id="opt-always-admin" /><span class="slider-sw"></span></label>
           </div>
         </div>
       </div>

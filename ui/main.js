@@ -148,6 +148,7 @@ function renderDetail() {
     const lbtn = $('leader-btn');
     lbtn.textContent = config.comboLeader ? prettyHotkey(config.comboLeader) : '지정 안 됨';
     lbtn.classList.toggle('set', !!config.comboLeader);
+    $('opt-always-admin').checked = !!config.alwaysAdmin;
     const vol = config.alarmVolume ?? 85;
     $('sl-volume').value = vol;
     $('vol-label').textContent = vol;
@@ -729,6 +730,15 @@ window.addEventListener('DOMContentLoaded', async () => {
     saveConfig();
   });
 
+  $('opt-always-admin').addEventListener('change', async (e) => {
+    config.alwaysAdmin = e.target.checked;
+    await saveConfig();
+    if (e.target.checked && !isAdmin) {
+      toast('지금 바로 관리자 권한으로 전환할게요 — UAC 창에서 [예]를 눌러주세요', 4000);
+      setTimeout(() => invoke('restart_as_admin').catch((err) => toast('' + err, 3500)), 900);
+    }
+  });
+
   // ─────────── 조합키 시작 버튼(리더 키) ───────────
   $('leader-btn').addEventListener('click', () =>
     // 리더는 단일 키/수식키 모두 가능 (조합은 불가 — 시작 버튼이므로)
@@ -741,8 +751,14 @@ window.addEventListener('DOMContentLoaded', async () => {
       saveConfig();
       renderDetail();
       renderList();
+      renderAdminBanner();
       if (combo) {
-        toast(`「${prettyHotkey(combo)}」를 누른 채 다른 키를 누르면 프리셋 단축키로 쓸 수 있어요`, 4200);
+        toast(
+          isAdmin
+            ? `「${prettyHotkey(combo)}」를 누른 채 다른 키를 누르면 프리셋 단축키로 쓸 수 있어요`
+            : `「${prettyHotkey(combo)}」 지정됨 — 게임 안에서 쓰려면 관리자 권한이 필요해요`,
+          4500
+        );
       }
     }, true)
   );
@@ -784,13 +800,27 @@ window.addEventListener('DOMContentLoaded', async () => {
   });
 
   // ─────────── 관리자 권한 표시/재시작 ───────────
+  // 훅 기반 기능(조합키 리더, 타이머)은 게임이 관리자 권한이면 우리도 관리자여야 보인다(UIPI)
+  function needsAdminForHooks() {
+    if (!config) return false;
+    return !!config.comboLeader || config.presets.some((p) => p.timerEnabled && p.timerHotkey);
+  }
+  function renderAdminBanner() {
+    const show = !isAdmin && needsAdminForHooks();
+    $('admin-banner').classList.toggle('hidden', !show);
+  }
+  $('admin-banner-btn').addEventListener('click', () => {
+    invoke('restart_as_admin').catch((e) => toast('' + e, 3500));
+  });
+
   (async () => {
     try {
       isAdmin = await invoke('is_admin');
       $('admin-state').textContent = isAdmin
-        ? '관리자 권한으로 실행 중 ✓'
-        : '일반 권한 — 한자키 제거 등록에는 관리자 권한 필요';
+        ? '관리자 권한으로 실행 중 ✓ (게임 안에서도 동작)'
+        : '일반 권한 — 게임 안에서는 조합키·타이머가 동작하지 않음';
       if (isAdmin) $('btn-admin').classList.add('hidden');
+      renderAdminBanner();
     } catch (_) {}
     try {
       hanjaPerm = await invoke('get_hanja_removal');
